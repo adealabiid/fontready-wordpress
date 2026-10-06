@@ -1,0 +1,13 @@
+name: WordPress directory checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  plugin-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wordpress/plugin-check-action@v1
+        with:
+          build-dir: './fontready'
+          slug: fontready
