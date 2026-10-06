@@ -578,10 +578,10 @@ index 50a906b..93d08b9 100644
 +    fixture.write_text(json.dumps({'version': 1, 'fonts': fonts, 'elementor_fonts':grouped}))
      subprocess.run([php, '-n', str(root / 'wordpress' / 'tests' / 'plugin.php'), str(fixture)], check=True)
 diff --git a/scripts/check_wordpress_ui.cjs b/scripts/check_wordpress_ui.cjs
-index 90e70ae..634162b 100644
+index 90e70ae..8747e05 100644
 --- a/scripts/check_wordpress_ui.cjs
 +++ b/scripts/check_wordpress_ui.cjs
-@@ -1,22 +1,25 @@
+@@ -1,22 +1,32 @@
  const fs=require('fs'),vm=require('vm'),assert=require('assert');
  const source=fs.readFileSync('static/wordpress.js','utf8');
  const good={endpoint:'https://site.example/wp-json/fontready/v1/fonts',status:'https://site.example/wp-json/fontready/v1/connection',site:'https://site.example/',key:'a'.repeat(64),expires:Math.floor(Date.now()/1000)+3600};
@@ -590,11 +590,11 @@ index 90e70ae..634162b 100644
 - const saved=new Map();if(connection)saved.set('fontready.website.v2',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
 - const calls=[];const context={window:{fontreadyCallback:callback},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},location:{assign(url){calls.push({kind:'navigate',url})}},document:{getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
 - vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved};
-+function setup({preview=false,expired=false,code=200,connection=good,callback=null,elementor=false,kit=null}={}){
++function setup({preview=false,expired=false,code=200,connection=good,callback=null,elementor=false,kit=null,failAt=null,timeout=false,offline=false,malformed=null}={}){
 + const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-site','wordpress-pro','wordpress-connect','wordpress-plugin','website-confirmation','elementor-manage','result','connection-status','wordpress-disconnect','elementor-progress'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:'',hidden:false,scrollIntoView(){}};
 + const saved=new Map();if(connection)saved.set('fontready.website.v3',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
 + if(kit){saved.set('fontready.selected-kit',kit);saved.set('fontready.pending-publish',kit);}
-+ const calls=[],listeners={};const context={window:{fontreadyCallback:callback,addEventListener:(name,fn)=>listeners[name]=fn},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},history:{replaceState(){}},location:{href:'https://fontready.com/font-to-elementor-pro/'+(kit?'?kit='+kit:''),assign(url){calls.push({kind:'navigate',url})}},document:{body:{dataset:{elementor:elementor?'true':'false'}},getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});if(path.endsWith('/complete/'))return {job:kit};if(path.startsWith('/api/conversions/')&&!options)return {id:kit,state:'ready',expires_at:new Date(Date.now()+60000).toISOString(),results:[]};return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,native_custom_fonts:true,multi_format_import:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
++ const calls=[],listeners={};const context={window:{fontreadyCallback:callback,addEventListener:(name,fn)=>listeners[name]=fn},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},history:{replaceState(){}},location:{href:'https://fontready.com/font-to-elementor-pro/'+(kit?'?kit='+kit:''),assign(url){calls.push({kind:'navigate',url})}},document:{body:{dataset:{elementor:elementor?'true':'false'}},getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,navigator:{onLine:!offline},csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});if(path.endsWith('/complete/'))return {job:kit};if(path.startsWith('/api/conversions/')&&!options)return {id:kit,state:'ready',expires_at:new Date(Date.now()+60000).toISOString(),results:[]};return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});const phase=path.includes('connection')?'verify':'publish';if(failAt===phase){const error=new Error('Failed to fetch');if(timeout)error.name='TimeoutError';throw error;}return {ok:code===200,status:code,json:async()=>{if(malformed===phase)throw new Error('Unexpected token <');return code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,native_custom_fonts:true,multi_format_import:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'};}}}};
 + context.showResult=job=>{context.activeJob=job;};vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved,listeners};
  }
  (async()=>{
@@ -614,6 +614,13 @@ index 90e70ae..634162b 100644
 + x=setup({connection:null,callback:{...good,state:'b'.repeat(64)}});await new Promise(resolve=>setImmediate(resolve));check(x.saved.has('fontready.website.v3'),'Callback confirmed and stored');check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Callback secret excluded from server');
 + const id='12345678-1234-1234-1234-123456789abc';x=setup({connection:null,callback:{...good,state:'b'.repeat(64)},elementor:true,kit:id});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));check(x.calls.some(c=>c.kind==='wp'&&c.path===good.endpoint),'Selected kit automatically published after approval');check(!x.saved.has('fontready.pending-publish'),'Approval resumes only once');
 + x=setup({elementor:true});await new Promise(resolve=>setImmediate(resolve));x.listeners['fontready:kit']();await new Promise(resolve=>setImmediate(resolve));check(x.calls.some(c=>c.kind==='wp'&&c.path===good.endpoint),'New upload auto-publishes to connected Elementor site');check(x.nodes['elementor-progress'].value===4,'Publishing completion updates progress');const before=x.calls.length;x.listeners['fontready:kit']();await new Promise(resolve=>setImmediate(resolve));check(x.calls.length===before,'Completed kit is not automatically published twice');
++ for(const failAt of ['verify','publish']){x=setup({failAt});await x.nodes['wordpress-publish'].onclick();const text=x.nodes['wordpress-status'].textContent;check(!text.includes('Failed to fetch'),'Raw browser error is not displayed');check(text.includes('site.example'),'Error names the destination');check(x.nodes['wordpress-publish'].disabled===false,'Retry control enabled after network failure');check(x.saved.has('fontready.website.v3'),'Network failure keeps the connection for retry');if(failAt==='verify'){check(text.includes('No font files were sent'),'Verification failure distinguishes unsent font');check(!x.calls.some(c=>c.kind==='wp'&&c.path===good.endpoint),'No import after failed verification');}else{check(text.includes('may already be installed'),'Interrupted import does not claim failure to install');check(!x.nodes['elementor-manage'].hidden,'Interrupted import offers native dashboard link');}}
++ x=setup({failAt:'verify',offline:true});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes('offline'),'Offline error gives internet recovery');
++ x=setup({failAt:'verify',timeout:true});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes('contact'),'Timeout has contextual website recovery');
++ x=setup({malformed:'publish'});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes('may already be installed'),'Malformed publishing acknowledgement requires checking native fonts');
++ for(const [code,phrase] of [[401,'expired'],[403,'security'],[404,'plugin endpoint'],[413,'too large'],[429,'Wait a moment']]){x=setup({code});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes(phrase),'Actionable HTTP '+code);if(code===401){check(!x.nodes['website-confirmation'].hidden,'Expired authorization reveals reconnect form');check(x.nodes['wordpress-publish'].textContent.includes('Reconnect'),'Expired authorization relabels primary action');}}
++ const app=fs.readFileSync('static/app.js','utf8');const apiSource=app.slice(app.indexOf('async function api('),app.indexOf('function updateButton('));
++ for(const sample of [{network:true,phrase:'Could not reach FontReady'},{status:403,phrase:'session'},{status:413,phrase:'too large'},{status:429,phrase:'busy'},{status:503,phrase:'could not complete'},{status:200,malformed:true,phrase:'unexpected response'}]){const apiContext={fetch:async()=>{if(sample.network)throw new Error('Failed to fetch');return {ok:sample.status===200,status:sample.status,json:async()=>{if(sample.malformed)throw new Error('Unexpected token');return {};}}},Error};vm.createContext(apiContext);vm.runInContext(apiSource,apiContext);try{await apiContext.api('/api/conversions/');check(false,'Error expected');}catch(error){check(error.message.includes(sample.phrase),'FontReady request has actionable error');check(!error.message.includes('Failed to fetch'),'FontReady hides raw browser transport error');}}
   const order=[];const callbackContext={location:{hash:'#fontready='+encodeURIComponent(JSON.stringify(good)),pathname:'/font-to-elementor-pro/',search:''},history:{replaceState(){order.push('stripped')}},window:{},JSON,decodeURIComponent};vm.runInNewContext(fs.readFileSync('static/wordpress-callback.js','utf8'),callbackContext);check(order[0]==='stripped'&&callbackContext.window.fontreadyCallback.key===good.key,'Fragment stripped synchronously');
   console.log(`Passed ${checks} seamless publishing UI contract checks.`);
  })().catch(e=>{console.error(e);process.exit(1)});
@@ -644,10 +651,10 @@ index 0d6177f..c5cad83 100644
 +(output/'elementor').mkdir(exist_ok=True)
 +(output/'elementor'/'index.html').write_text(markup)
 diff --git a/static/app.css b/static/app.css
-index e371679..045b84c 100644
+index e371679..c2f13e1 100644
 --- a/static/app.css
 +++ b/static/app.css
-@@ -48,3 +48,9 @@
+@@ -48,3 +48,47 @@
  @media(max-width:600px) { .wordpress-publish { padding:16px; } }
  
  .elementor-nav{color:var(--purple,#7357df)!important;white-space:nowrap}.elementor-connect{display:grid;grid-template-columns:1.25fr 1fr;gap:60px;padding:65px 0 35px}.elementor-connect h1{font-size:64px;letter-spacing:-3px;line-height:1.08;margin:18px 0}.elementor-connect ol{padding-left:20px;line-height:1.9;color:var(--muted,#7d7c87)}.connect-card{background:var(--card,#fff);border:1px solid var(--line,#e9e8ef);border-radius:24px;padding:30px;align-self:center}.connect-card>label{display:block;margin:15px 0;font-size:13px}.connect-card input[type=url]{width:100%;padding:13px;border:1px solid var(--line,#e9e8ef);border-radius:10px;background:var(--card,#fff);color:inherit}.connect-card .primary-button{width:100%;margin:12px 0}.connect-card .muted{font-size:11px;line-height:1.7}.header nav{flex-wrap:wrap;gap:16px}@media(max-width:800px){.elementor-connect{grid-template-columns:1fr;gap:25px}.elementor-connect h1{font-size:46px}.header{flex-wrap:wrap;gap:20px}.header nav{width:100%;justify-content:space-between}}
@@ -657,11 +664,49 @@ index e371679..045b84c 100644
 +body[data-elementor] .tip-card{display:none}
 +
 +body[data-elementor="true"] .workspace{grid-template-columns:minmax(0,1fr);max-width:900px;margin:0 auto}body[data-elementor="true"] .side-column,body[data-elementor="true"] .preview-toggle{display:none}body[data-elementor="true"] .settings-card .convert-row{margin-top:16px}#elementor-progress{width:100%;height:12px;accent-color:var(--accent,#7453eb);margin:16px 0}.owner-link{font-size:12px;opacity:.7}
++
++/* Compact Elementor journey with explicit states and recovery actions. */
++body[data-elementor="true"] .elementor-heading{max-width:900px;margin:auto;padding:36px 0 24px}
++body[data-elementor="true"] .elementor-heading h1{font-size:clamp(32px,4vw,46px)}
++body[data-elementor="true"] .elementor-heading>p:not(.eyebrow){color:var(--muted);max-width:650px;font-size:14px}
++body[data-elementor="true"] .flow-steps{gap:12px;margin:20px 0 0;flex-wrap:wrap;color:var(--muted)}
++body[data-elementor="true"] .flow-steps li{padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
++body[data-elementor="true"] .main-column{gap:16px}
++body[data-elementor="true"] .card{padding:22px;border-radius:14px}
++body[data-elementor="true"] .elementor-status-card{padding:16px 20px;background:var(--soft);box-shadow:none;border-color:transparent}
++body[data-elementor="true"] .elementor-status-card .card-heading{margin:0 0 6px}
++body[data-elementor="true"] .elementor-status-card .muted{margin:0;line-height:1.6;font-size:12px}
++.stage-badge{font-size:9px;letter-spacing:.8px;font-weight:700;color:var(--purple);white-space:nowrap}
++#elementor-progress{display:block;appearance:none;-webkit-appearance:none;border:0;border-radius:20px;overflow:hidden;background:var(--line);height:6px;margin:12px 0 0;width:100%}
++#elementor-progress::-webkit-progress-bar{background:var(--line);border-radius:20px}
++#elementor-progress::-webkit-progress-value{background:var(--purple);border-radius:20px}
++#elementor-progress::-moz-progress-bar{background:var(--purple);border-radius:20px}
++body[data-font-stage="complete"] #elementor-progress::-webkit-progress-value{background:var(--green)}
++body[data-font-stage="complete"] #elementor-progress::-moz-progress-bar{background:var(--green)}
++body[data-elementor="true"] .result-card{border-color:var(--line)}
++body[data-elementor="true"] .result-card>.card-heading{margin-bottom:4px}
++body[data-elementor="true"] .result-row{padding:12px 0 16px}
++body[data-elementor="true"] .result-font-heading{margin-bottom:6px;flex-wrap:wrap}
++.ready-formats{color:var(--green);font-size:12px;margin:0}
++body[data-elementor="true"] .wordpress-publish{margin:16px 0 0;padding:18px;background:var(--bg);border:0;border-radius:10px}
++body[data-elementor="true"] .wordpress-publish h3{font-size:16px;margin:0 0 10px}
++.publisher-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:16px 0 0}
++.publisher-actions .primary-button,.publisher-actions .secondary-button{margin:0;padding:12px 18px;min-height:44px;white-space:normal;text-align:center}
++#connection-status:empty,#wordpress-status:empty{display:none}
++#connection-status{font-size:12px;color:var(--muted);margin:8px 0}
++#wordpress-status{font-size:12px;line-height:1.65;margin:14px 0 0;padding:12px 14px;border-radius:8px;background:var(--soft);color:var(--text)}
++#wordpress-status.error,#connection-status.error{background:#fff0ef;color:#8b2929;border:1px solid #efc9c5;padding:12px 14px;border-radius:8px}
++body.dark #wordpress-status.error,body.dark #connection-status.error{background:#3a2428;color:#ffc4be;border-color:#673c42}
++body[data-elementor="true"] .wordpress-publish>.muted:last-child{font-size:11px;line-height:1.7;margin:14px 0 0}
++body[data-elementor="true"] .wordpress-publish a.secondary-button{text-decoration:none;margin-top:12px}
++body[data-elementor="true"] .font-guide{max-width:900px;margin:32px auto 0;padding:28px 0}
++body[data-elementor="true"] .font-guide .guide-intro{display:none}
++@media(max-width:600px){body[data-elementor="true"] .card{padding:18px}body[data-elementor="true"] .elementor-status-card{padding:14px 16px}.publisher-actions{align-items:stretch;gap:10px}.publisher-actions>*{flex:1 1 100%}.stage-badge{font-size:8px}body[data-elementor="true"] .countdown{font-size:10px}body[data-elementor="true"] .result-font-heading small{width:100%;margin-top:0}}
 diff --git a/static/app.js b/static/app.js
-index 6912ec7..132948c 100644
+index 6912ec7..e774ac3 100644
 --- a/static/app.js
 +++ b/static/app.js
-@@ -1,14 +1,15 @@
+@@ -1,24 +1,55 @@
  /* UI previews are explicitly separate from the real Django conversion API. */
  const $ = id => document.getElementById(id);
 +const elementorMode = document.body.dataset.elementor === 'true';
@@ -671,18 +716,48 @@ index 6912ec7..132948c 100644
  const bytes = n => n >= 1048576 ? `${(n / 1048576).toFixed(2)} MB` : `${(n / 1024).toFixed(1)} KB`;
  function element(tag, text, cls) { const el = document.createElement(tag); if (text !== undefined) {el.textContent = t(text);if(text!==t(text))el.dataset.i18n=text;} if (cls) el.className = cls; return el; }
 -function message(text, error = false) { $('message').textContent = t(text); $('message').className = error ? 'error' : ''; $('message').hidden = false; }
-+function message(text, error = false) { if(elementorMode && $('elementor-progress')){ const p=$('elementor-progress'); if(error)p.value=0; else if(text.includes('ready'))p.value=3; else if(text.includes('Converting'))p.value=2; else p.value=1; } $('message').textContent = t(text); $('message').className = error ? 'error' : ''; $('message').hidden = false; }
++function elementorStage(step, title, detail, state='working') {
++  if(!elementorMode)return;
++  const progress=$('elementor-progress');
++  if(progress){progress.value=step;progress.hidden=step===0;progress.setAttribute('aria-valuetext',title);}
++  if($('elementor-stage-title'))$('elementor-stage-title').textContent=title;
++  if($('elementor-stage-detail'))$('elementor-stage-detail').textContent=detail;
++  if($('elementor-stage-label'))$('elementor-stage-label').textContent=state==='error'?'NEEDS ATTENTION':step===4?'COMPLETE':step===3?'PUBLISH':step>0?'PREPARING':'UPLOAD';
++  document.body.dataset.fontStage=state;
++}
++window.fontreadyStage=elementorStage;
++function message(text, error = false) {
++  if(elementorMode && !window.fontreadyPublishing){
++    if(error)elementorStage(activeJob?.state==='ready'?3:0,'Let’s try that again',text,'error');
++    else if(text.includes('ready'))elementorStage(3,'Your font is ready','Confirm your website below, then publish.','ready');
++    else elementorStage(text.includes('Converting')?2:1,'Preparing your font',text);
++  }
++  $('message').textContent=t(text);$('message').className=error?'error':'';$('message').hidden=elementorMode&&!error;
++}
  function csrf() { return document.cookie.split('; ').find(x => x.startsWith('csrftoken='))?.split('=').slice(1).join('=') || ''; }
- async function api(path, options = {}) { const response = await fetch(path, {credentials:'same-origin', ...options}); const data = await response.json().catch(() => ({error:'The server returned an unexpected response.'})); if (!response.ok) throw new Error(data.error || 'The request failed. Please try again.'); return data; }
+-async function api(path, options = {}) { const response = await fetch(path, {credentials:'same-origin', ...options}); const data = await response.json().catch(() => ({error:'The server returned an unexpected response.'})); if (!response.ok) throw new Error(data.error || 'The request failed. Please try again.'); return data; }
 -function updateButton() { const formats = document.querySelectorAll('input[name="format"]:checked'); $('convert').disabled = busy || !files.length || !formats.length; $('convert').textContent = busy ? t('Converting…') : t('Convert fonts ↗'); $('selection-info').textContent = files.length ? t('{count} fonts · {size} selected').replace('{count}',files.length).replace('{size}',bytes(files.reduce((sum,f)=>sum+f.size,0))) : t('Your website-ready kit is one step away.'); }
++async function api(path, options = {}) {
++  let response;
++  try {response=await fetch(path,{credentials:'same-origin',...options});}
++  catch(error){throw new Error(error.name==='TimeoutError'||error.name==='AbortError'?'FontReady took too long to respond. Your prepared font stays selected; try again.':'Could not reach FontReady. Check your internet connection and try again. Your selected font has been kept.');}
++  const data=await response.json().catch(()=>null);
++  if(!response.ok){
++    const fallback=response.status===403?'Your FontReady session needs refreshing. Reload the page and try again.':response.status===413?'This font is too large for the server. Choose a smaller font.':response.status===429?'FontReady is busy. Wait a moment, then try again.':response.status>=500?'FontReady could not complete the request. Try again shortly.':`FontReady returned error ${response.status}. Try again.`;
++    throw new Error(data?.error||fallback);
++  }
++  if(!data)throw new Error('FontReady returned an unexpected response. Reload the page and try again.');
++  return data;
++}
 +function updateButton() { const formats = document.querySelectorAll('input[name="format"]:checked'); $('convert').disabled = busy || !files.length || (!elementorMode && !formats.length); $('convert').textContent = busy ? t('Converting…') : t('Convert fonts ↗'); $('selection-info').textContent = files.length ? t('{count} fonts · {size} selected').replace('{count}',files.length).replace('{size}',bytes(files.reduce((sum,f)=>sum+f.size,0))) : t('Your website-ready kit is one step away.'); }
  function renderFiles() {
    $('file-list').replaceChildren();
    files.forEach((file, i) => { const row = element('div', undefined, 'file-row'); row.append(element('span','Aa','file-icon')); const description = element('div', undefined, 'file-description'); description.append(element('div', file.name, 'file-name'), element('div', `${file.name.split('.').pop().toUpperCase()} · ${bytes(file.size)}`, 'file-size')); row.append(description); const remove = element('button','×','remove-file'); remove.type = 'button'; remove.setAttribute('aria-label', `Remove ${file.name}`); remove.disabled = busy; remove.onclick = () => { files.splice(i, 1); renderFiles(); loadPreviews(); }; row.append(remove); $('file-list').append(row); });
-@@ -16,9 +17,11 @@ function renderFiles() {
+   $('clear').hidden = !files.length; $('clear').disabled = busy; updateButton();
  }
  function addFiles(incoming) {
-   if (busy) return message('Please wait for this conversion to finish.', true);
+-  if (busy) return message('Please wait for this conversion to finish.', true);
++  if (busy || window.fontreadyPublishing) return message('Please wait for your current font to finish before uploading another.',true);
 +  if(elementorMode){if(incoming.length!==1)return message('Upload one font at a time for Elementor.',true);files=[];}
    let errors = [];
 -  for (const file of incoming) { if (!/\.(ttf|otf|woff|woff2)$/i.test(file.name)) {errors.push(`${file.name}: unsupported file type.`); continue;} if (!file.size || file.size > 5 * 1048576) { errors.push(`${file.name}: choose a file under 5 MB.`); continue; } if (files.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) continue; if (files.length >= 10 || files.reduce((s,f)=>s+f.size,0) + file.size > 25*1048576) { errors.push('Maximum 10 files and 25 MB per batch.'); break; } files.push(file); }
@@ -692,11 +767,13 @@ index 6912ec7..132948c 100644
  }
  async function loadPreviews() {
    if(!previewOpen)return;
-@@ -60,12 +63,12 @@ $('theme').onclick = () => {document.body.classList.toggle('dark');saveTheme(doc
+@@ -59,19 +90,20 @@ try {document.body.classList.toggle('dark',localStorage.getItem('fontready-theme
+ $('theme').onclick = () => {document.body.classList.toggle('dark');saveTheme(document.body.classList.contains('dark') ? 'dark' : 'light');};
  $('convert').onclick = async () => {
    if (previewOnly) return message('This is the interface preview. Real conversion runs in the local Django app or Lightsail staging.', true);
-   busy = true; renderFiles(); window.trackFontReady?.('conversion_started',{file_count:files.length}); message('Your fonts are in the conversion queue.');
+-  busy = true; renderFiles(); window.trackFontReady?.('conversion_started',{file_count:files.length}); message('Your fonts are in the conversion queue.');
 -  const data = new FormData(); files.forEach(f=>data.append('fonts',f)); document.querySelectorAll('input[name="format"]:checked').forEach(i=>data.append('formats',i.value)); data.append('characters',$('characters').value); data.append('font_display',$('font-display').value);
++  busy = true; if(elementorMode)$('result').hidden=true;renderFiles(); window.trackFontReady?.('conversion_started',{file_count:files.length}); message('Your fonts are in the conversion queue.');
 +  const data = new FormData(); files.forEach(f=>data.append('fonts',f)); (elementorMode ? ['woff2','woff','ttf','svg','eot'] : [...document.querySelectorAll('input[name="format"]:checked')].map(i=>i.value)).forEach(f=>data.append('formats',f)); if(elementorMode)data.append('profile','elementor'); data.append('characters',$('characters').value); data.append('font_display',$('font-display').value);
    try {
      const configuration=await api('/api/conversions/');
@@ -707,15 +784,30 @@ index 6912ec7..132948c 100644
        message('Uploading your fonts…');
        try{
          // Two uploads at a time keeps browser memory and network use bounded.
-@@ -88,10 +91,14 @@ $('convert').onclick = async () => {
+         for(let i=0;i<files.length;i+=2)await Promise.all(files.slice(i,i+2).map(async(file,offset)=>{
+           const target=prepared.uploads[i+offset];
+-          const response=await fetch(target.url,{method:'PUT',headers:{'Content-Type':target.content_type},body:file,credentials:'omit',referrerPolicy:'no-referrer'});
++          let response;
++          try{response=await fetch(target.url,{method:'PUT',headers:{'Content-Type':target.content_type},body:file,credentials:'omit',referrerPolicy:'no-referrer'});}catch{throw new Error('The font upload connection was interrupted. Check your internet connection, then upload the font again.');}
+           if(!response.ok)throw new Error('Font upload failed. Please try again.');
+         }));
+         job=await api(`/api/uploads/${prepared.job.id}/complete/`,{method:'POST',headers:{'X-CSRFToken':csrf()}});
+@@ -83,15 +115,20 @@ $('convert').onclick = async () => {
+       job=await api('/api/conversions/',{method:'POST',headers:{'X-CSRFToken':csrf()},body:data});
+     }
+     activeJob=job;poll(job.id);refreshHistory();
+-  }catch(error){busy=false;renderFiles();message(error.message,true);}
++  }catch(error){busy=false;renderFiles();message(error.message || 'We could not complete this step. Please try again.',true);}
+ 
  };
  function poll(id) {
    clearTimeout(polling);
 -  const tick = async () => {try {const job=await api(`/api/conversions/${id}/`); activeJob=job; if (['ready','failed','expired'].includes(job.state)) {busy=false;renderFiles();if(job.state==='ready'){window.trackFontReady?.('conversion_completed',{file_count:job.results.length,output_count:job.results.reduce((n,r)=>n+Object.keys(r.sizes).length,0)});showResult(job);$('result').scrollIntoView({behavior:'smooth',block:'start'});message('Your fonts are ready. Download your kit within 24 minutes.');}else{message(job.error || 'This download has expired.',true);} await refreshHistory();return;} const offline=job.state==='queued' && job.worker_available===false;message(offline?'Conversion is waiting for the processing service. Please try again shortly.':job.state==='processing'?'Converting your fonts and assembling the kit…':'Your fonts are in the conversion queue.',offline);polling=setTimeout(tick,job.state==='processing'?300:500);} catch (error) {busy=false;renderFiles();message(error.message,true);} }; tick();
-+  const tick = async () => {try {const job=await api(`/api/conversions/${id}/`); activeJob=job; if (['ready','failed','expired'].includes(job.state)) {busy=false;renderFiles();if(job.state==='ready'){window.trackFontReady?.('conversion_completed',{file_count:job.results.length,output_count:job.results.reduce((n,r)=>n+Object.keys(r.sizes).length,0)});showResult(job);$('result').scrollIntoView({behavior:'smooth',block:'start'});message(elementorMode?'Your font is ready. Confirm your website to publish.':'Your fonts are ready. Download your kit within 24 minutes.');}else{message(job.error || 'This download has expired.',true);} await refreshHistory();return;} const offline=job.state==='queued' && job.worker_available===false;message(offline?'Conversion is waiting for the processing service. Please try again shortly.':job.state==='processing'?'Converting your fonts and assembling the kit…':'Your fonts are in the conversion queue.',offline);polling=setTimeout(tick,job.state==='processing'?300:500);} catch (error) {busy=false;renderFiles();message(error.message,true);} }; tick();
++  const tick = async () => {try {const job=await api(`/api/conversions/${id}/`); activeJob=job; if (['ready','failed','expired'].includes(job.state)) {busy=false;renderFiles();if(job.state==='ready'){window.trackFontReady?.('conversion_completed',{file_count:job.results.length,output_count:job.results.reduce((n,r)=>n+Object.keys(r.sizes).length,0)});showResult(job);$('result').scrollIntoView({behavior:'smooth',block:'start'});message(elementorMode?'Your font is ready. Confirm your website to publish.':'Your fonts are ready. Download your kit within 24 minutes.');}else{message(job.error || 'This download has expired.',true);} await refreshHistory();return;} const offline=job.state==='queued' && job.worker_available===false;message(offline?'Conversion is waiting for the processing service. Please try again shortly.':job.state==='processing'?'Converting your fonts and assembling the kit…':'Your fonts are in the conversion queue.',offline);polling=setTimeout(tick,job.state==='processing'?300:500);} catch (error) {busy=false;renderFiles();message(error.message || 'We could not complete this step. Please try again.',true);} }; tick();
  }
  function showResult(job) {
    activeJob=job; $('result').hidden=false; $('result-files').replaceChildren();
++  if(elementorMode){if($('elementor-result-title'))$('elementor-result-title').textContent='Ready to publish';if($('elementor-manage'))$('elementor-manage').hidden=true;}
 +  if($('elementor-publish-link')) $('elementor-publish-link').href='/font-to-elementor-pro/?kit='+encodeURIComponent(job.id);
 +  if(document.body.dataset.elementor==='true'){
 +    sessionStorage.setItem('fontready.selected-kit',job.id);
@@ -723,25 +815,34 @@ index 6912ec7..132948c 100644
    if($('wordpress-review')){
      $('wordpress-status').textContent='';
      $('wordpress-review').textContent=job.results.map(f=>`${f.family} · ${f.weight} · ${f.style}`).join(' / ');
-@@ -101,6 +108,7 @@ function showResult(job) {
+@@ -101,6 +138,7 @@ function showResult(job) {
      const heading=element('div',undefined,'result-font-heading');
      heading.append(element('b',result.metadata?.fields?.full_name || result.family),element('small',`${result.weight} · ${result.style} · ${t('Original')} ${bytes(result.original_size)}`));
      row.append(heading);
-+    if(elementorMode){row.append(element('p','Prepared for Elementor. WOFF2, WOFF, TTF, SVG and EOT are prepared together in one font variant.','muted'));$('result-files').append(row);continue;}
++    if(elementorMode){row.append(element('p','All five Elementor formats are ready.','ready-formats'));$('result-files').append(row);continue;}
      const grid=element('div',undefined,'download-grid');
      const requested=job.requested_formats?.length?job.requested_formats:Object.keys(result.sizes);
      for(const format of ['woff2','woff','ttf','otf','svg'].filter(f=>requested.includes(f)||f in result.sizes)){
-@@ -127,7 +135,8 @@ function showResult(job) {
+@@ -127,7 +165,8 @@ function showResult(job) {
      }
      $('result-files').append(row);
    }
 -  $('css-code').textContent=job.css;$('download').href=job.download_url || '#'; updateCountdown();renderInfo(job);watchResearch(job);
-+  if(elementorMode){const button=$('wordpress-publish');if(button){button.hidden=sessionStorage.getItem('fontready.last-published')===job.id;button.textContent='Publish to Elementor Pro website ↗';}window.dispatchEvent(new CustomEvent('fontready:kit',{detail:job}));}
++  if(elementorMode){const button=$('wordpress-publish');if(button){button.hidden=sessionStorage.getItem('fontready.last-published')===job.id;button.textContent='Publish font ↗';}window.dispatchEvent(new CustomEvent('fontready:kit',{detail:job}));}
 +  $('css-code').textContent=job.css;$('download').href=job.download_url || '#'; updateCountdown();if(!elementorMode){renderInfo(job);watchResearch(job);}
  }
  function updateCountdown() {if(!activeJob || !$('result') || $('result').hidden)return;const left=Math.max(0,Math.floor((new Date(activeJob.expires_at)-Date.now())/1000));$('countdown').textContent=left ? `${String(Math.floor(left/60)).padStart(2,'0')}:${String(left%60).padStart(2,'0')} ${t('remaining')}` : t('Download expired');$('download').hidden=!left;$('copy-link').hidden=!left;$('info-download').hidden=!left;document.querySelectorAll('.font-download').forEach(link=>{link.hidden=!left;});if(!left)clearTimeout(researchPolling);}
  setInterval(updateCountdown,1000);
-@@ -182,7 +191,7 @@ $('copy-css').onclick = ()=>copy(activeJob?.css || '', 'CSS');
+@@ -153,7 +192,7 @@ function renderHistory(){
+     }
+     if(job.state==='uploading'){
+       const cancel=element('button','Cancel upload','text-button');cancel.type='button';
+-      cancel.onclick=async()=>{try{await api(`/api/uploads/${job.id}/complete/`,{method:'DELETE',headers:{'X-CSRFToken':csrf()}});await refreshHistory();}catch(error){message(error.message,true);}};entry.append(cancel);
++      cancel.onclick=async()=>{try{await api(`/api/uploads/${job.id}/complete/`,{method:'DELETE',headers:{'X-CSRFToken':csrf()}});await refreshHistory();}catch(error){message(error.message || 'We could not complete this step. Please try again.',true);}};entry.append(cancel);
+     }
+     container.append(entry);
+   }
+@@ -182,7 +221,7 @@ $('copy-css').onclick = ()=>copy(activeJob?.css || '', 'CSS');
  $('copy-link').onclick = ()=>{if(activeJob?.download_url)copy(new URL(activeJob.download_url,location.origin).href, 'Download link');};
  const instructions={css:['Extract your kit and upload the fonts/ folder alongside stylesheet.css.','Add <link rel="stylesheet" href="/path/to/stylesheet.css"> to your page.','Set font-family to the family name shown in your generated CSS.'],elementor:['Open WordPress → Elementor → Custom Fonts in an installation that supports this feature.','Add a family and upload each font file with its matching weight and style.','Select your custom family in the Typography controls, then check the published page.'],next:['Copy the converted files into your Next.js project, such as app/fonts/.','Use next/font/local with each file’s path, weight and style.','Apply the returned className to the element or layout that should use your font.']};
  function installTab(key) {$('install-content').replaceChildren();const list=element('ol');(localizedInstructions[interfaceLanguage]?.[['css','elementor','next'].indexOf(key)] || instructions[key]).forEach(text=>list.append(element('li',text)));$('install-content').append(list);document.querySelectorAll('[data-tab]').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.tab===key)));}
@@ -750,7 +851,7 @@ index 6912ec7..132948c 100644
  if(previewOnly){$('preview-banner').hidden=false;$('ai-help').textContent=t('Automatic Gemini information is available in the configured Django app.');}
  
  let fontDetailsOpen=false;
-@@ -254,7 +263,7 @@ function setLanguage(code){
+@@ -254,7 +293,7 @@ function setLanguage(code){
    renderFact();
    if(!sampleEdited)$('preview-text').value=sampleText();
    $('characters').placeholder=t('Leave blank to keep every character');
@@ -760,10 +861,10 @@ index 6912ec7..132948c 100644
    if(!previewOnly)refreshHistory();
  }
 diff --git a/static/wordpress.js b/static/wordpress.js
-index 578f2b7..dc157ae 100644
+index 578f2b7..37a376f 100644
 --- a/static/wordpress.js
 +++ b/static/wordpress.js
-@@ -1,8 +1,8 @@
+@@ -1,12 +1,35 @@
  /* Opaque authentication stays in this browser tab; the user never copies a key. */
  (() => {
    const get = id => document.getElementById(id);
@@ -774,15 +875,48 @@ index 578f2b7..dc157ae 100644
    const message = (text, error = false, id = 'connection-status') => {
      const element = get(id) || get('wordpress-status');
      if (element) { element.textContent = text; element.className = error ? 'error' : ''; }
-@@ -28,21 +28,34 @@
+   };
++  const stage = (step,title,detail,state='working') => {
++    if(window.fontreadyStage)window.fontreadyStage(step,title,detail,state);
++    else if(get('elementor-progress'))get('elementor-progress').value=step;
++  };
++  async function wordpressRequest(url, options, phase, site) {
++    const host=new URL(site).host;
++    let response;
++    try {response=await fetch(url,options);}
++    catch(error){
++      const timeout=error.name==='TimeoutError'||error.name==='AbortError';
++      if(phase==='publish')throw new Error(`Publishing confirmation from ${host} ${timeout?'timed out':'was interrupted'}. The font may already be installed. Check Elementor Custom Fonts on your website before retrying. Your prepared font is still selected.`);
++      const offline=typeof navigator!=='undefined'&&navigator.onLine===false;
++      throw new Error(offline?'You appear to be offline. Reconnect to the internet, then retry. Your prepared font is still selected.':`Could not ${timeout?'contact':'read a response from'} ${host} to verify the website connection. No font files were sent. Retry; if this continues, reconnect the website and check that its security settings allow FontReady requests.`);
++    }
++    const data=await response.json().catch(()=>null);
++    if(!response.ok){
++      const errors={401:'Your website connection has expired or was revoked. Confirm your website again to reconnect.',403:`${host} refused the request. Check the website’s security or firewall settings, then retry.`,404:'The FontReady plugin endpoint was not found. Activate or update FontReady on your website, then reconnect.',413:'Your website rejected the font package because it is too large. Increase the website upload/request limit or use a smaller font.',429:`${host} is receiving too many requests. Wait a moment, then retry.`};
++      if(response.status===401){clear();showConnection();}
++      throw new Error(errors[response.status] || data?.message || `${host} returned error ${response.status}. Check WordPress → FontReady, then retry.`);
++    }
++    if(!data)throw new Error(phase==='publish'?`The response from ${host} did not confirm publishing. Check Elementor Custom Fonts before retrying; your font may already be installed.`:`${host} returned an unexpected response instead of confirming FontReady. Check the plugin is active and your website URL is correct, then reconnect.`);
++    return data;
++  }
+   const clear = () => { connection = null; sessionStorage.removeItem(storageKey); };
+   function endpoint(value, route, site) {
+     const url = new URL(value), origin = new URL(site);
+@@ -26,23 +49,37 @@
+   try { const saved = JSON.parse(sessionStorage.getItem(storageKey) || 'null'); if (saved) connection = validate(saved, saved.site); }
+   catch { try { clear(); } catch {} }
    const showConnection = () => {
-     if (connection) {
-       if (get('wordpress-site')) get('wordpress-site').value = connection.site;
+-    if (connection) {
+-      if (get('wordpress-site')) get('wordpress-site').value = connection.site;
 -      message(`Connected to ${new URL(connection.site).host}. Your website is ready.`);
-+      message(`Publishing destination: ${new URL(connection.site).host}.`);
-+      if(get('website-confirmation')) get('website-confirmation').hidden=true;
-+      if(get('wordpress-disconnect'))get('wordpress-disconnect').hidden=false;
-     }
+-    }
++    if(connection){
++      if(get('wordpress-site'))get('wordpress-site').value=connection.site;
++      message(`Connected to ${new URL(connection.site).host}.`);
++    }else message('Confirm your website below to connect.');
++    if(get('website-confirmation'))get('website-confirmation').hidden=!!connection;
++    if(get('wordpress-disconnect'))get('wordpress-disconnect').hidden=!connection;
++    if(get('wordpress-publish'))get('wordpress-publish').textContent=connection?'Publish font ↗':'Connect & publish ↗';
    };
    showConnection();
 -  if (get('wordpress-connect')) get('wordpress-connect').onclick = async () => {
@@ -820,10 +954,14 @@ index 578f2b7..dc157ae 100644
    const callback = window.fontreadyCallback;
    delete window.fontreadyCallback;
    if (callback) (async () => {
-@@ -54,18 +67,22 @@
-       const response = await fetch(candidate.status, {credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${candidate.key}`}});
-       if (!response.ok) throw new Error('WordPress could not confirm your connection. Check Elementor Pro and reconnect.');
-       const status = await response.json();
+@@ -51,21 +88,23 @@
+       const requested = sessionStorage.getItem('fontready.requested-site');
+       if (!requested || !/^[a-f0-9]{64}$/.test(callback.state)) throw new Error('Start your connection from FontReady again.');
+       const candidate = validate(callback, requested);
+-      const response = await fetch(candidate.status, {credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${candidate.key}`}});
+-      if (!response.ok) throw new Error('WordPress could not confirm your connection. Check Elementor Pro and reconnect.');
+-      const status = await response.json();
++      const status = await wordpressRequest(candidate.status, {credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${candidate.key}`}},'verify',candidate.site);
 +      if (status.native_custom_fonts !== true || status.multi_format_import !== true) throw new Error('Update the FontReady plugin to version 0.4.0 before publishing the complete Elementor font set.');
        if (status.elementor_pro !== true || new URL(status.site).href !== new URL(candidate.site).href) throw new Error('WordPress could not confirm this website.');
 -      await api('/api/wordpress/complete/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({state:callback.state,requested_site:requested,site:status.site,families:status.families,variants:status.variants})});
@@ -836,66 +974,91 @@ index 578f2b7..dc157ae 100644
 -    } catch (error) { message(error.message, true); }
 +      const job = await restoreKit();
 +      if (job && paired.job === job.id && sessionStorage.getItem('fontready.pending-publish') === job.id) { sessionStorage.removeItem('fontready.pending-publish'); await publish.onclick(); }
-+    } catch (error) { await restoreKit(); message(error.message, true); } finally { restoring=false; }
++    } catch(error){await restoreKit();showConnection();stage(3,'Website connection needs attention','Your prepared font is kept below. Reconnect your website to continue.','error');message(error.message,true);}finally{restoring=false;}
    })();
 +  else restoreKit().finally(()=>{restoring=false;});
    if (get('wordpress-disconnect')) get('wordpress-disconnect').onclick = () => {
      if (publishing) return;
 -    clear(); message('Disconnected from this browser. You can disconnect all access in WordPress → FontReady.');
-+    clear(); if(get('website-confirmation'))get('website-confirmation').hidden=false; if(get('elementor-manage'))get('elementor-manage').hidden=true; message('Disconnected from this browser. You can disconnect all access in WordPress → FontReady.');
++    clear();showConnection(); if(get('website-confirmation'))get('website-confirmation').hidden=false; if(get('elementor-manage'))get('elementor-manage').hidden=true; message('Disconnected from this browser. You can disconnect all access in WordPress → FontReady.');
    };
    const publish = get('wordpress-publish');
    if (!publish) return;
-@@ -73,16 +90,21 @@
+@@ -73,26 +112,46 @@
      if (publishing) return;
      const status = (text, error=false) => message(text,error,'wordpress-status');
      if (previewOnly) return status('Publishing is available in the running FontReady application.',true);
 -    if (!connection) return status('Connect your website from “Font to Elementor Pro” in the top menu.',true);
      const job = activeJob;
      if (!job || job.state !== 'ready' || new Date(job.expires_at) <= new Date()) return status('Convert your fonts again; this kit is unavailable.',true);
-     publishing = true; publish.disabled = true;
+-    publishing = true; publish.disabled = true;
++    publishing = true; window.fontreadyPublishing=true; publish.disabled = true;publish.textContent='Checking website…';
++    let phase='verify';
      try {
-+      if (!connection) { await connectForPublish(job); return; }
-       connection = validate(connection, connection.site);
-+      const probe = await fetch(connection.status,{credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${connection.key}`}});
-+      const capability = await probe.json().catch(()=>null);
-+      if (!probe.ok) { if(probe.status===401)clear(); throw new Error(capability?.message || 'Reconnect your WordPress website.'); }
+-      connection = validate(connection, connection.site);
++      if (!connection) {publish.textContent='Opening WordPress…';await connectForPublish(job); return;}
++      try {connection=validate(connection,connection.site);}catch(error){clear();showConnection();throw error;}
++      stage(3,'Checking your website','Confirming your FontReady connection before sending files.');
++      const capability=await wordpressRequest(connection.status,{credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${connection.key}`}},'verify',connection.site);
 +      if (capability?.native_custom_fonts !== true || capability?.elementor_pro !== true || capability?.multi_format_import !== true) throw new Error('Update FontReady to 0.4.0 and check Elementor Pro before publishing all font formats.');
        const host = new URL(connection.site).host;
 -      status(`Installing fonts on ${host}…`);
-+      status(`Preparing all Elementor font files for ${host}…`);
++      phase='prepare';publish.textContent='Preparing files…';
++      stage(3,'Preparing to publish',`Getting your font files ready for ${host}.`);
++      status(`Preparing your font for ${host}…`);
        const payload = await api(`/api/conversions/${job.id}/wordpress/`, {method:'POST',headers:{'X-CSRFToken':csrf()},signal:AbortSignal.timeout(120000)});
        if (activeJob?.id !== job.id) throw new Error('The active kit changed. Review it and install again.');
-+      status(`Publishing your font files to ${host}…`);
-       const response = await fetch(connection.endpoint,{method:'POST',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${connection.key}`},body:JSON.stringify(payload)});
-       const data = await response.json().catch(()=>null);
-       if (!response.ok) {
-@@ -90,9 +112,17 @@
-         throw new Error(data?.message || `WordPress returned ${response.status}. Check your website and try again.`);
-       }
+-      const response = await fetch(connection.endpoint,{method:'POST',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${connection.key}`},body:JSON.stringify(payload)});
+-      const data = await response.json().catch(()=>null);
+-      if (!response.ok) {
+-        if (response.status === 401) clear();
+-        throw new Error(data?.message || `WordPress returned ${response.status}. Check your website and try again.`);
+-      }
++      phase='publish';publish.textContent='Publishing…';
++      stage(3,'Publishing your font',`Sending your font files to ${host}. Keep this page open.`);
++      status(`Publishing your font to ${host}…`);
++      const data=await wordpressRequest(connection.endpoint,{method:'POST',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${connection.key}`},body:JSON.stringify(payload)},'publish',connection.site);
        if (!Array.isArray(data?.families) || !Number.isInteger(data?.imported)) throw new Error('Check WordPress → FontReady to confirm the installation before retrying.');
 -      status(`Installed on ${host}: ${data.families.join(', ')}. Refresh Elementor and select your font under FontReady.`);
 +      status(`Published to Elementor Custom Fonts on ${host}: ${data.families.join(', ')}. Refresh the Elementor editor to use them.`);
 +      sessionStorage.setItem('fontready.last-published',job.id);
-+      if(get('elementor-progress'))get('elementor-progress').value=4;
++      stage(4,'Your font is published',`Ready to use in Elementor on ${host}.`,'complete');
++      if(get('elementor-result-title'))get('elementor-result-title').textContent='Published to Elementor Pro';
 +      publish.textContent='Published ✓';publish.hidden=true;
-+      if(Array.isArray(data.formats)) status(`Published ${data.families.join(', ')} to ${host}. Installed formats: ${data.formats.map(f=>f.toUpperCase()).join(', ')}.`);
-+      if (get('elementor-manage') && data.manage_url) { const url = new URL(data.manage_url); if(url.origin === new URL(connection.site).origin && url.protocol==='https:') { get('elementor-manage').href=url.href;get('elementor-manage').hidden=false; } }
++      if(Array.isArray(data.formats)) status(`${data.families.join(', ')} is published to ${host}. All ${data.formats.length} formats are installed. Open Elementor Custom Fonts below, or upload your next font.`);
++      if (get('elementor-manage') && data.manage_url) { const url = new URL(data.manage_url); if(url.origin === new URL(connection.site).origin && url.protocol==='https:') { get('elementor-manage').href=url.href;get('elementor-manage').textContent='Open Elementor Custom Fonts ↗';get('elementor-manage').hidden=false; } }
        api(`/api/conversions/${job.id}/published/`,{method:'POST',headers:{'X-CSRFToken':csrf()}}).catch(()=>{});
-     } catch (error) { status(error.message || 'Check WordPress → FontReady before retrying.',true); }
-     finally { publishing=false; publish.disabled=false; }
+-    } catch (error) { status(error.message || 'Check WordPress → FontReady before retrying.',true); }
+-    finally { publishing=false; publish.disabled=false; }
++    } catch(error){
++      const detail=error.message || 'Publishing could not be confirmed. Check Elementor Custom Fonts before retrying.';
++      stage(3,phase==='publish'?'Check publishing status':'Your font is ready to retry','Your prepared font is kept below. Follow the recovery steps in the message.','error');status(detail,true);
++      publish.textContent=connection?'Retry publishing ↗':'Reconnect & publish ↗';publish.hidden=false;
++      if(phase==='publish'&&connection&&get('elementor-manage')){get('elementor-manage').href=new URL('wp-admin/edit.php?post_type=elementor_font',connection.site).href;get('elementor-manage').textContent='Check Elementor Custom Fonts ↗';get('elementor-manage').hidden=false;}
++    } finally {publishing=false;window.fontreadyPublishing=false;publish.disabled=false;}
++
    };
 +  window.addEventListener?.('fontready:kit', () => {
++    showConnection();
++    if(activeJob && sessionStorage.getItem('fontready.last-published')===activeJob.id){stage(4,'Previously published','This font was already published from this browser tab.','complete');if(get('elementor-result-title'))get('elementor-result-title').textContent='Previously published';}
 +    if(document.body.dataset.elementor==='true' && !restoring && connection && activeJob?.state==='ready' && sessionStorage.getItem('fontready.last-published')!==activeJob.id) publish.onclick();
 +  });
  })();
 diff --git a/templates/index.html b/templates/index.html
-index 86ad04a..d18e426 100644
+index 86ad04a..282b55c 100644
 --- a/templates/index.html
 +++ b/templates/index.html
-@@ -23,19 +23,16 @@
-   <script src="{% static 'app.js' %}" defer></script>
-   <script src="{% static 'wordpress.js' %}" defer></script>
+@@ -18,24 +18,21 @@
+   <script type="application/ld+json">{{ structured_data|json_ld }}</script>
+   {% if analytics_enabled %}<script async src="https://www.googletagmanager.com/gtag/js?id=G-ZMTELBECKT"></script><script src="{% static 'analytics.js' %}" defer></script>{% endif %}
+   <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
+-  <link rel="stylesheet" href="{% static 'app.css' %}">
++  <link rel="stylesheet" href="{% static 'app.css' %}?v=20261006-2">
+   <script src="{% static 'i18n.js' %}" defer></script>
+-  <script src="{% static 'app.js' %}" defer></script>
+-  <script src="{% static 'wordpress.js' %}" defer></script>
++  <script src="{% static 'app.js' %}?v=20261006-2" defer></script>
++  <script src="{% static 'wordpress.js' %}?v=20261006-2" defer></script>
  </head>
 -<body data-interface-language="{{ language }}">
 +<body data-interface-language="{{ language }}"{% if elementor_page %} data-elementor="true"{% endif %}>
@@ -917,7 +1080,7 @@ index 86ad04a..d18e426 100644
      <section class="hero">
        <div class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span> <span data-i18n="A SMALL TOOL FOR BETTER TYPOGRAPHY">A SMALL TOOL FOR BETTER TYPOGRAPHY</span></div>
        <h1><span class="hero-first" data-i18n="Your fonts.">Your fonts.</span><br><span data-i18n="Ready for the web.">Ready for the web.</span></h1>
-@@ -43,6 +40,7 @@
+@@ -43,16 +40,17 @@
        <div class="hero-notes"><span data-i18n="↗ WOFF2 · WOFF · TTF · OTF · SVG">↗ WOFF2 · WOFF · TTF · OTF · SVG</span><span data-i18n="⌁ Batch conversion">⌁ Batch conversion</span><span data-i18n="◷ 24-minute downloads">◷ 24-minute downloads</span></div>
        <div class="type-art" aria-hidden="true"><span class="art-small">Aa</span><span class="art-large">Aa</span><span class="art-chip">.otf <b>→</b> .woff2</span><span class="art-dot">✳</span></div>
      </section>
@@ -925,9 +1088,12 @@ index 86ad04a..d18e426 100644
      <div class="workspace" id="workspace" data-clarity-mask="true">
        <div class="main-column">
          <div class="upload-preview" id="upload-preview">
-@@ -51,8 +49,8 @@
+         <section class="card upload-card">
+-          <div class="card-heading"><h2><span class="step">01</span><span data-i18n="Add your fonts">Add your fonts</span></h2><button id="toggle-preview" type="button" class="secondary-button preview-toggle" aria-expanded="false" aria-controls="font-preview" data-i18n="Preview">Preview</button></div>
++          <div class="card-heading"><h2><span class="step">01</span>{% if elementor_page %}<span>Upload your font</span>{% else %}<span data-i18n="Add your fonts">Add your fonts</span>{% endif %}</h2><button id="toggle-preview" type="button" class="secondary-button preview-toggle" aria-expanded="false" aria-controls="font-preview" data-i18n="Preview">Preview</button></div>
            <div class="dropzone" id="dropzone">
-             <span class="upload-icon" aria-hidden="true">↑</span><h3 data-i18n="Drop your fonts here">Drop your fonts here</h3>
+-            <span class="upload-icon" aria-hidden="true">↑</span><h3 data-i18n="Drop your fonts here">Drop your fonts here</h3>
++            <span class="upload-icon" aria-hidden="true">↑</span>{% if elementor_page %}<h3>Drop one font here</h3>{% else %}<h3 data-i18n="Drop your fonts here">Drop your fonts here</h3>{% endif %}
              <p><span data-i18n="or">or</span> <button type="button" class="text-button" id="browse" data-i18n="browse files">browse files</button> <span data-i18n="from your device">from your device</span></p>
 -            <span class="muted" data-i18n="Up to 10 files · 5 MB each · 25 MB total">Up to 10 files · 5 MB each · 25 MB total</span>
 -            <input type="file" id="files" multiple accept=".ttf,.otf,.woff,.woff2" hidden>
@@ -936,15 +1102,17 @@ index 86ad04a..d18e426 100644
            </div>
            <div id="file-list" class="file-list" data-clarity-mask="true"></div>
            <div class="upload-bottom"><span data-i18n="Only upload fonts you have permission to use on the web.">Only upload fonts you have permission to use on the web.</span><button id="clear" class="text-button" hidden data-i18n="Clear all">Clear all</button></div>
-@@ -66,35 +64,55 @@ everything feel different.</textarea>
+@@ -65,36 +63,56 @@ everything feel different.</textarea>
+           <div class="preview-footer"><span data-i18n="Click the text to make it yours.">Click the text to make it yours.</span><button id="reset-preview" class="text-button" data-i18n="Reset sample">Reset sample</button></div>
          </section>
          </div>
-         <section class="card settings-card">
+-        <section class="card settings-card">
 -          <div class="card-heading"><h2><span class="step">02</span><span data-i18n="Choose your output">Choose your output</span></h2><span class="muted" data-i18n="Five formats. One kit.">Five formats. One kit.</span></div>
++        <section class="card settings-card{% if elementor_page %} elementor-status-card{% endif %}">
 +          {% if elementor_page %}
-+          <div class="card-heading"><h2><span class="step">02</span>Preparing your font</h2></div>
-+          <p class="muted">Upload a TTF, OTF, WOFF or WOFF2 font. We prepare the Elementor files automatically.</p>
-+          <progress id="elementor-progress" aria-label="Font conversion progress" max="4" value="0"></progress>
++          <div class="card-heading"><h2 id="elementor-stage-title">Ready when you are</h2><span class="stage-badge" id="elementor-stage-label">UPLOAD</span></div>
++          <p class="muted" id="elementor-stage-detail">Choose one font above. Conversion starts automatically.</p>
++          <progress id="elementor-progress" aria-label="Font publishing stages" max="4" value="0" hidden></progress>
 +          <input id="font-display" type="hidden" value="swap"><textarea id="characters" hidden></textarea><span id="ai-help" hidden></span>
 +          {% else %}
 +          <div class="card-heading"><h2><span class="step">02</span><span data-i18n="Choose your output">Choose your output</span></h2>{% if elementor_page %}<span class="muted">Ready for Elementor Pro.</span>{% else %}<span class="muted" data-i18n="Five formats. One kit.">Five formats. One kit.</span>{% endif %}</div>
@@ -964,24 +1132,26 @@ index 86ad04a..d18e426 100644
            <div class="automatic-info"><span class="info-spark" aria-hidden="true">✦</span><div><b data-i18n="Font information, automatically">Font information, automatically</b><p id="ai-help" class="muted" data-i18n="Embedded details are included. Available Gemini research is reused from our font database.">Embedded details are included. Available Gemini research is reused from our font database.</p></div><span class="auto-badge">AUTO</span></div>
 -<div class="convert-row"><span id="selection-info" data-i18n="Your website-ready kit is one step away.">Your website-ready kit is one step away.</span><button id="convert" class="primary-button" disabled>Convert fonts <span>↗</span></button></div>
 +          {% endif %}
-+<div class="convert-row"><span id="selection-info" data-i18n="Your website-ready kit is one step away.">Your website-ready kit is one step away.</span><button id="convert" class="primary-button" {% if elementor_page %}hidden{% endif %} disabled>Convert fonts <span>↗</span></button></div>
++<div class="convert-row" {% if elementor_page %}hidden{% endif %}><span id="selection-info" data-i18n="Your website-ready kit is one step away.">Your website-ready kit is one step away.</span><button id="convert" class="primary-button" {% if elementor_page %}hidden{% endif %} disabled>Convert fonts <span>↗</span></button></div>
            <p id="message" role="status" aria-live="polite" hidden></p>
          </section>
          <section class="card result-card" id="result" hidden>
-           <div class="card-heading"><h2><span data-i18n="Your kit is ready">Your kit is ready</span> <span class="success-dot">✓</span></h2><span class="countdown" id="countdown"></span></div>
+-          <div class="card-heading"><h2><span data-i18n="Your kit is ready">Your kit is ready</span> <span class="success-dot">✓</span></h2><span class="countdown" id="countdown"></span></div>
++          <div class="card-heading"><h2>{% if elementor_page %}<span id="elementor-result-title">Ready to publish</span>{% else %}<span data-i18n="Your kit is ready">Your kit is ready</span>{% endif %} <span class="success-dot">✓</span></h2><span class="countdown" id="countdown"></span></div>
            <div id="result-files"></div>
 -          <div class="result-actions"><a id="download" class="primary-button" href="#" data-i18n="Download kit ↓">Download kit ↓</a><button id="copy-link" class="secondary-button" data-i18n="Copy download link">Copy download link</button></div>
 -          <p class="muted" data-i18n="Includes fonts, stylesheet.css, preview.html and README.txt.">Includes fonts, stylesheet.css, preview.html and README.txt.</p>
 -          <section class="wordpress-publish" aria-labelledby="wordpress-title" data-clarity-mask="true">
 -            <h3 id="wordpress-title">Install in Elementor Pro</h3>
 -            <p>Your connected website is ready. Review your fonts, then install them in one click.</p>
+-            <p id="wordpress-review" class="muted"></p>
+-            <div class="result-actions"><button id="wordpress-publish" class="secondary-button" type="button">Install fonts ↗</button></div>
 +          <div class="result-actions" {% if elementor_page %}hidden{% endif %}><a id="download" class="primary-button" href="#" data-i18n="Download kit ↓">Download kit ↓</a><button id="copy-link" class="secondary-button" data-i18n="Copy download link">Copy download link</button></div>
 +          <p class="muted" {% if elementor_page %}hidden{% endif %} data-i18n="Includes fonts, stylesheet.css, preview.html and README.txt.">Includes fonts, stylesheet.css, preview.html and README.txt.</p>
 +          {% if elementor_page %}
 +          <section class="wordpress-publish" id="elementor-publish-panel" aria-labelledby="wordpress-title" data-clarity-mask="true">
 +            <h3 id="wordpress-title">Publish to your Elementor Pro website</h3>
-             <p id="wordpress-review" class="muted"></p>
--            <div class="result-actions"><button id="wordpress-publish" class="secondary-button" type="button">Install fonts ↗</button></div>
++            <p id="wordpress-review" class="muted" hidden></p>
 +            <div id="website-confirmation">
 +              <label for="wordpress-site">Website URL</label><input id="wordpress-site" type="url" placeholder="https://yourwebsite.com" autocomplete="url">
 +              <label class="wordpress-license"><input id="wordpress-pro" type="checkbox"> Elementor Pro is installed and active.</label>
@@ -989,11 +1159,11 @@ index 86ad04a..d18e426 100644
 +              <p class="muted">Install the plugin in WordPress → Plugins → Add New → Upload Plugin, then activate it. Your converted fonts stay here while you do this.</p>
 +            </div>
 +            <p id="connection-status" role="status" aria-live="polite"></p>
-+            <button id="wordpress-publish" class="primary-button" type="button">Publish to Elementor Pro website ↗</button>
-+            <button id="wordpress-disconnect" class="text-button" type="button" hidden>Use another website</button>
++            <div class="publisher-actions"><button id="wordpress-publish" class="primary-button" type="button">Connect &amp; publish ↗</button>
++            <button id="wordpress-disconnect" class="secondary-button" type="button" hidden>Change website</button></div>
              <p id="wordpress-status" role="status" aria-live="polite"></p>
 +            <a id="elementor-manage" class="secondary-button" hidden target="_blank" rel="noopener noreferrer">Open Elementor Custom Fonts ↗</a>
-+            <p class="muted">You’ll approve through your WordPress administrator account. Connecting shares your domain and installation totals. <a href="/privacy/">Privacy details</a>.</p>
++            <p class="muted">Approve once in WordPress; later uploads publish automatically to your connected website. Connecting shares your domain and installation totals. <a href="/privacy/">Privacy details</a>.</p>
            </section>
 -          <div class="font-info-heading"><h3 data-i18n="About your fonts">About your fonts</h3><div class="font-info-actions"><button id="toggle-font-details" class="text-button" type="button" aria-expanded="false" aria-controls="font-info" data-i18n="Show details">Show details</button><a id="info-download" class="text-button" href="#" data-i18n="Information JSON ↓">Information JSON ↓</a></div></div><p class="muted" id="research-status"></p><div id="font-info"></div><div class="code-heading"><b data-i18n="Your @font-face CSS">Your @font-face CSS</b><button class="text-button" id="copy-css" data-i18n="Copy CSS">Copy CSS</button></div><pre id="css-code"></pre>
 +          {% else %}
@@ -1008,9 +1178,10 @@ index 86ad04a..d18e426 100644
        </aside>
      </div>
 -    <section class="installation" id="installation"><div><div class="eyebrow" data-i18n="FROM DOWNLOAD TO WEBSITE">FROM DOWNLOAD TO WEBSITE</div><h2 data-i18n="Put your fonts to work.">Put your fonts to work.</h2><p data-i18n="Download the kit. Choose your platform. Bring your typography to life.">Download the kit. Choose your platform. Bring your typography to life.</p></div><div class="install-card"><div class="tabs" role="tablist" aria-label="Installation platform"><button role="tab" aria-selected="true" data-tab="css" data-i18n="HTML / CSS">HTML / CSS</button><button role="tab" aria-selected="false" data-tab="elementor" data-i18n="Elementor">Elementor</button><button role="tab" aria-selected="false" data-tab="next" data-i18n="Next.js">Next.js</button></div><div id="install-content" role="tabpanel"></div></div></section>
+-    <section class="font-guide" id="font-guide" aria-labelledby="guide-title">
 +    {% if not elementor_page %}<section class="installation" id="installation"><div><div class="eyebrow" data-i18n="FROM DOWNLOAD TO WEBSITE">FROM DOWNLOAD TO WEBSITE</div><h2 data-i18n="Put your fonts to work.">Put your fonts to work.</h2><p data-i18n="Download the kit. Choose your platform. Bring your typography to life.">Download the kit. Choose your platform. Bring your typography to life.</p></div><div class="install-card"><div class="tabs" role="tablist" aria-label="Installation platform"><button role="tab" aria-selected="true" data-tab="css" data-i18n="HTML / CSS">HTML / CSS</button><button role="tab" aria-selected="false" data-tab="elementor" data-i18n="Elementor">Elementor</button><button role="tab" aria-selected="false" data-tab="next" data-i18n="Next.js">Next.js</button></div><div id="install-content" role="tabpanel"></div></div></section>
 +    {% endif %}
-     <section class="font-guide" id="font-guide" aria-labelledby="guide-title">
++    <section class="font-guide" id="font-guide" aria-labelledby="{% if elementor_page %}questions{% else %}guide-title{% endif %}">
        <div class="guide-intro"><h2 id="guide-title">{{ seo.heading }}</h2><p>{{ seo.intro }}</p></div>
 -      <h3>{{ seo.formats_heading }}</h3>
 +      {% if not elementor_page %}<h3>{{ seo.formats_heading }}</h3>
