@@ -1,6 +1,6 @@
 # FontReady WordPress.org submission plan
 
-Status: planning and development. Not submitted. Native Elementor compatibility and Plugin Check results are not yet verified on a live WordPress installation.
+Status: planning and development. Not submitted. Elementor Pro 4.3.1 source contracts pass against the owner-supplied package, including manager lookup, metadata and CSS generation with WordPress APIs stubbed. Native Elementor compatibility and Plugin Check results are not yet verified on a live WordPress installation.
 
 ## 1. Finish the release gates
 

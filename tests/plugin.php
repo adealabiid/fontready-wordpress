@@ -91,6 +91,10 @@ check(count(glob($uploads.'/fontready/*'))===3,'Collision does not leave font fi
 $native_before=count($native_posts);
 check(is_wp_error(FontReady_Plugin::import(new Request(array('version'=>1,'fonts'=>array($payload['fonts'][3]))))),'Direct OTF rejected with conversion guidance');
 check(count($native_posts)===$native_before&&count(glob($uploads.'/fontready/*'))===3,'Unsupported native import rolls back records and files');
+if(getenv('ELEMENTOR_PRO_SOURCE')){
+ $css=get_post_meta($native_id,NativeCustomFonts::FONT_FACE_META_KEY,true);
+ check(strpos($css,"font-family: 'FontReady Test'")!==false&&strpos($css,"format('woff2')")!==false&&strpos($css,"format('truetype')")!==false,'Supplied Elementor generates native font CSS');
+}
 foreach(glob($uploads.'/fontready/*') as $file)unlink($file);
 rmdir($uploads.'/fontready'); rmdir($uploads);
 echo "Passed $checks plugin contract checks.\n";

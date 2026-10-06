@@ -12,7 +12,8 @@ final class FontReady_Elementor {
         $manager_class = 'ElementorPro\\Modules\\AssetsManager\\AssetTypes\\Fonts_Manager';
         if ( ! class_exists( $module_class ) || ! class_exists( $manager_class ) ) { throw new RuntimeException( 'Elementor Pro Custom Fonts is unavailable. Activate Elementor Pro and try again.' ); }
         $module = $module_class::instance();
-        $this->manager = $module->get_component( 'fonts-manager' );
+        if ( ! is_callable( array( $module, 'get_assets_manager' ) ) ) { throw new RuntimeException( 'This Elementor Pro version does not expose its assets manager. No fonts were installed.' ); }
+        $this->manager = $module->get_assets_manager( 'font' );
         $this->type = $this->manager ? $this->manager->get_font_type_object( 'custom' ) : null;
         if ( ! $this->type || ! is_callable( array( $this->type, 'save_meta' ) ) || ! defined( get_class( $this->type ) . '::FONT_META_KEY' ) || ! post_type_exists( $manager_class::CPT ) ) {
             throw new RuntimeException( 'This Elementor Pro version does not expose the supported Custom Fonts interface. No fonts were installed.' );

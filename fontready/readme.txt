@@ -3,7 +3,7 @@ Contributors: adealabiid
 Tags: fonts, typography, elementor, custom fonts
 Requires at least: 6.2
 Requires PHP: 7.4
-Stable tag: 0.3.0
+Stable tag: 0.3.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -53,6 +53,10 @@ HTTPS, REST API access and forwarding of the Authorization header are required. 
 If an installation response is lost, check the installed count before retrying. Clear page caches and refresh Elementor after installing. If a terminated PHP process leaves a write lock, deactivate and reactivate the plugin when no imports are running.
 
 == Changelog ==
+
+= 0.3.1 =
+* Correct the Elementor assets-manager lookup for native Custom Fonts publishing.
+* Add optional contract tests against owner-supplied Elementor Pro source.
 = 0.3.0 =
 Native Elementor Custom Fonts records and media attachments; convert-first Elementor publishing page; selected-kit recovery through administrator approval; removal of the total stored-variant quota.
 

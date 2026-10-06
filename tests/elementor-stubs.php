@@ -9,9 +9,13 @@ class NativeCustomFonts {
  const FONT_META_KEY='elementor_font_files'; const FONT_FACE_META_KEY='elementor_font_face';
  function save_meta($id,$data){update_post_meta($id,self::FONT_META_KEY,$data['font_face']);update_post_meta($id,self::FONT_FACE_META_KEY,'native-css');}
 }
-class NativeModule {static function instance(){return new self;}function get_component($name){return new NativeManager();}}
-class_alias('NativeModule','ElementorPro\\Modules\\AssetsManager\\Module');
-class_alias('NativeManager','ElementorPro\\Modules\\AssetsManager\\AssetTypes\\Fonts_Manager');
+class NativeModule {static function instance(){return new self;}function get_assets_manager($name){return $name==='font'?new NativeManager():null;}function get_component($name){return null;}}
+if ( getenv('ELEMENTOR_PRO_SOURCE') ) {
+ require __DIR__.'/elementor-source.php';
+} else {
+ class_alias('NativeModule','ElementorPro\\Modules\\AssetsManager\\Module');
+ class_alias('NativeManager','ElementorPro\\Modules\\AssetsManager\\AssetTypes\\Fonts_Manager');
+}
 function post_type_exists($type){return $type==='elementor_font';}
 function get_posts($query){global $native_posts;return array_values(array_filter($native_posts,function($p)use($query){return $p->post_type===$query['post_type']&&$p->post_title===$query['title'];}));}
 function wp_insert_post($data,$error=false){global $native_posts,$native_next;$id=++$native_next;$native_posts[$id]=(object)array_merge($data,array('ID'=>$id));return $id;}
