@@ -10,9 +10,19 @@ License URI: https://www.gnu.org/licenses/gpl-2.0.html
 Convert fonts with FontReady and install them on your Elementor Pro website without copying connection keys.
 
 == Description ==
-FontReady connects your WordPress website to the font conversion service at https://fontready.com. Installing and activating the plugin enables font installation. Connection requires your administrator account, HTTPS, an active Elementor Pro installation, and confirmation of your website domain.
+Your fonts. Ready for Elementor.
 
-The dashboard has a connection view and a count of installed font families and variants, using FontReady's branding. Font files are hosted locally in uploads/fontready. They are published into Elementor Pro’s native Custom Fonts manager and registered in the WordPress media library. This plugin does not create records in the WordPress block editor Font Library.
+FontReady takes your font from upload to website. Convert a TTF, OTF, WOFF or WOFF2 font with https://fontready.com, preview your typography, and publish WOFF2, WOFF, TTF, SVG and EOT together into Elementor Pro Custom Fonts.
+
+Approve through your WordPress administrator account, then keep creating — no FontReady account or connection keys to copy. Installed fonts stay hosted on your own website.
+
+* One upload, all five Elementor font formats.
+* Native Custom Fonts families with matching weight/style variants.
+* A connection dashboard with installed font family and variant totals.
+* Local font files in uploads/fontready and attachments in the WordPress media library.
+* Revocable publishing access, approved by your administrator.
+
+HTTPS and active Elementor Pro are required. This plugin does not create records in the WordPress block editor Font Library. Only convert and install fonts you have permission to embed on your website.
 
 FontReady is independent and is not affiliated with or endorsed by Elementor.
 

@@ -41,3 +41,7 @@ After approval, publish the plugin through the assigned SVN repository. GitHub r
 Private staging uses local streams, recorded seek offsets and owner-only permissions. FTP/SSH WP_Filesystem transports cannot implement this offset protocol. The corresponding PHPCS exceptions are scoped to the exact local calls and are documented in source. Font asset chmod is also local because native font media is written locally. These exceptions are presented for human review, not blanket exclusions. GET pairing values only populate a confirmation form; mutations require the administrator capability and fontready_manage nonce.
 
 No acceptance, approval date or review duration is promised.
+
+## Listing copy and icons
+
+Use `docs/SUBMISSION_COPY.md` for the description and Additional Information field. Directory GIF icons and static alternatives are in the top-level `assets` folder; see its README for SVN placement and the distinction from the installable ZIP. The first GIF frame shows the full logo. Directory animation playback remains unverified.
