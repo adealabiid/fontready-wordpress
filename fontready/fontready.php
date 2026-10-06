@@ -3,7 +3,7 @@
  * Plugin Name: FontReady
  * Plugin URI: https://fontready.com
  * Description: Publish converted fonts into Elementor Pro Custom Fonts. No FontReady account or manual connection keys required.
- * Version: 0.4.1
+ * Version: 0.4.2
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Author: Ademola Alabi
@@ -14,6 +14,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 require_once __DIR__ . '/includes/validation.php';
 require_once __DIR__ . '/includes/elementor.php';
+require_once __DIR__ . '/includes/transfer.php';
 
 final class FontReady_Plugin {
     const REGISTRY = 'fontready_fonts';
@@ -21,6 +22,7 @@ final class FontReady_Plugin {
     const ORIGIN = 'https://fontready.com';
 
     public static function init() {
+        add_action( 'fontready_cleanup_transfer', array( 'FontReady_Transfer', 'expire' ) );
         add_action( 'admin_init', array( __CLASS__, 'connect' ) );
         add_action( 'admin_enqueue_scripts', array( __CLASS__, 'admin_styles' ) );
         add_action( 'admin_menu', array( __CLASS__, 'menu' ) );
@@ -54,7 +56,7 @@ final class FontReady_Plugin {
             }
             $css .= '@font-face{font-family:' . wp_json_encode( $face['family'], JSON_UNESCAPED_UNICODE ) . ';src:' . implode( ',', $sources ) . ';font-weight:' . $face['weight'] . ';font-style:' . $face['style'] . ';font-display:swap;}';
         }
-        wp_register_style( 'fontready', false, array(), '0.4.1' );
+        wp_register_style( 'fontready', false, array(), '0.4.2' );
         wp_enqueue_style( 'fontready' );
         wp_add_inline_style( 'fontready', $css );
     }
@@ -89,7 +91,9 @@ final class FontReady_Plugin {
 
     public static function import( $request ) {
         if ( strlen( $request->get_body() ) > 36 * 1024 * 1024 ) { return new WP_Error( 'fontready_size', 'Import payload is too large.', array( 'status' => 413 ) ); }
-        $fonts = fontready_validate_fonts( $request->get_json_params() );
+        $payload = $request->get_json_params();
+        if ( is_array( $payload ) && ( $payload['version'] ?? null ) === 2 ) { return FontReady_Transfer::accept( $payload ); }
+        $fonts = fontready_validate_fonts( $payload );
         if ( is_wp_error( $fonts ) ) { return $fonts; }
         // Serialize registry writes without letting a retry delete an active lock.
         if ( ! add_option( 'fontready_import_lock', time(), '', false ) ) { return new WP_Error( 'fontready_busy', 'Another font change is running. Try again shortly.', array( 'status' => 409 ) ); }
@@ -146,16 +150,17 @@ final class FontReady_Plugin {
         $faces = self::active_faces();
         $ready = false;
         try { new FontReady_Elementor(); $ready = true; } catch ( Throwable $error ) {}
-        return new WP_REST_Response( array( 'site' => home_url( '/' ), 'elementor_pro' => self::pro(), 'families' => count( array_unique( array_column( $faces, 'family' ) ) ), 'variants' => self::variant_count( $faces ), 'native_custom_fonts' => $ready, 'multi_format_import' => true ), 200 );
+        return new WP_REST_Response( array( 'site' => home_url( '/' ), 'elementor_pro' => self::pro(), 'families' => count( array_unique( array_column( $faces, 'family' ) ) ), 'variants' => self::variant_count( $faces ), 'native_custom_fonts' => $ready, 'multi_format_import' => true, 'chunked_import' => true ), 200 );
     }
     public static function admin_styles( $hook ) {
-        if ( $hook === 'toplevel_page_fontready' ) { wp_enqueue_style( 'fontready-admin', plugins_url( 'assets/admin.css', __FILE__ ), array(), '0.4.1' ); }
+        if ( $hook === 'toplevel_page_fontready' ) { wp_enqueue_style( 'fontready-admin', plugins_url( 'assets/admin.css', __FILE__ ), array(), '0.4.2' ); }
     }
     public static function connect() {
         if ( ! isset( $_POST['fontready_action'] ) || ! current_user_can( 'manage_options' ) ) { return; }
         check_admin_referer( 'fontready_manage' );
         $action = sanitize_key( wp_unslash( $_POST['fontready_action'] ) );
         if ( $action === 'disconnect' ) {
+            FontReady_Transfer::cleanup( get_option( FontReady_Transfer::STATE, array() ) ); delete_option( FontReady_Transfer::STATE );
             delete_option( self::CONNECTION );
             wp_safe_redirect( admin_url( 'admin.php?page=fontready' ) ); exit;
         }
@@ -188,22 +193,22 @@ final class FontReady_Plugin {
             <div class="fr-intro"><p class="fr-eyebrow"><?php echo esc_html__( 'YOUR FONTS. YOUR WEBSITE.', 'fontready' ); ?></p><h2><?php echo esc_html__( 'Ready for Elementor.', 'fontready' ); ?></h2><p><?php echo esc_html__( 'Convert with FontReady. Install here. Keep creating.', 'fontready' ); ?></p></div>
             <div class="fr-grid"><section class="fr-card"><div class="fr-card-heading"><h3><?php echo esc_html__( 'Website connection', 'fontready' ); ?></h3><span class="fr-status <?php echo $connected ? 'is-connected' : ''; ?>"><?php echo $connected ? esc_html__( 'Connected', 'fontready' ) : esc_html__( 'Ready to connect', 'fontready' ); ?></span></div>
                 <p class="fr-domain"><?php echo esc_html( home_url( '/' ) ); ?></p>
-                <p><?php echo esc_html__( 'Your activated plugin allows FontReady to install fonts on this website. Connect through your WordPress administrator account.', 'fontready' ); ?></p>
+                <p><?php echo $connected ? esc_html__( 'Your website is connected. Convert fonts on FontReady and publish them here.', 'fontready' ) : esc_html__( 'Your activated plugin allows FontReady to install fonts on this website. Connect through your WordPress administrator account.', 'fontready' ); ?></p>
                 <?php if ( ! self::pro() ) { ?><p class="fr-warning"><?php echo esc_html__( 'Activate Elementor Pro to connect this website.', 'fontready' ); ?></p><?php } ?>
                 <?php if ( $pending ) { ?>
                     <form method="post"><?php wp_nonce_field( 'fontready_manage' ); ?><input type="hidden" name="fontready_state" value="<?php echo esc_attr( $state ); ?>">
                     <input type="hidden" name="fontready_confirm" value="1"><input type="hidden" name="fontready_job" value="<?php echo esc_attr( isset( $_GET['fontready_job'] ) ? sanitize_text_field( wp_unslash( $_GET['fontready_job'] ) ) : '' ); ?>">
                     <p><?php echo esc_html__( 'Elementor Pro is installed. Approving allows FontReady to publish the selected fonts to this website and shares its domain and installation totals.', 'fontready' ); ?></p>
                     <button class="fr-button" name="fontready_action" value="connect" <?php disabled( ! self::pro() ); ?>><?php echo esc_html__( 'Approve font publishing ↗', 'fontready' ); ?></button></form>
-                <?php } else { ?><a class="fr-button" href="https://fontready.com/font-to-elementor-pro/"><?php echo esc_html__( 'Connect on FontReady ↗', 'fontready' ); ?></a><?php } ?>
+                <?php } else { ?><a class="fr-button" href="https://fontready.com/font-to-elementor-pro/"><?php echo $connected ? esc_html__( 'Convert & publish fonts ↗', 'fontready' ) : esc_html__( 'Connect on FontReady ↗', 'fontready' ); ?></a><?php } ?>
                 <?php if ( $connected ) { ?><form method="post" class="fr-disconnect"><?php wp_nonce_field( 'fontready_manage' ); ?><button name="fontready_action" value="disconnect"><?php echo esc_html__( 'Disconnect website', 'fontready' ); ?></button></form><?php } ?>
                 <p class="fr-footnote"><?php echo esc_html__( 'Only install fonts you have permission to use. Fonts stay on your website after the FontReady download expires.', 'fontready' ); ?></p>
             </section><section class="fr-card fr-stat"><span class="fr-stat-icon" aria-hidden="true"><?php echo esc_html__( 'Aa', 'fontready' ); ?></span><p class="fr-number"><?php echo esc_html( count( array_unique( array_column( $faces, 'family' ) ) ) ); ?></p><h3><?php echo esc_html__( 'Fonts installed', 'fontready' ); ?></h3><p><?php echo esc_html__( 'with FontReady ·', 'fontready' ); ?><?php echo esc_html( self::variant_count( $faces ) ); ?><?php echo esc_html__( 'variants', 'fontready' ); ?></p><div class="fr-stat-tip"><?php echo esc_html__( 'Your fonts appear in Elementor → Custom Fonts. Refresh the editor after publishing. Manage fonts in Elementor.', 'fontready' ); ?></div></section></div>
-            <footer class="fr-footer"><?php echo esc_html__( 'FontReady 0.4.1 ·', 'fontready' ); ?><a href="https://fontready.com/privacy/"><?php echo esc_html__( 'Privacy & service details', 'fontready' ); ?></a><span><?php echo esc_html__( 'Made for better typography.', 'fontready' ); ?></span></footer>
+            <footer class="fr-footer"><?php echo esc_html__( 'FontReady 0.4.2 ·', 'fontready' ); ?><a href="https://fontready.com/privacy/"><?php echo esc_html__( 'Privacy & service details', 'fontready' ); ?></a><span><?php echo esc_html__( 'Made for better typography.', 'fontready' ); ?></span></footer>
         </div>
         <?php
     }
 
 }
 FontReady_Plugin::init();
-register_deactivation_hook( __FILE__, function() { delete_option( FontReady_Plugin::CONNECTION ); delete_option( 'fontready_import_lock' ); } );
+register_deactivation_hook( __FILE__, function() { delete_option( FontReady_Plugin::CONNECTION ); delete_option( 'fontready_import_lock' ); FontReady_Transfer::cleanup( get_option( FontReady_Transfer::STATE, array() ) ); delete_option( FontReady_Transfer::STATE ); delete_option( 'fontready_transfer_lock' ); } );

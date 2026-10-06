@@ -6,8 +6,10 @@ define( 'ELEMENTOR_PRO_VERSION', 'test' );
 $options = array(); $uploads = sys_get_temp_dir() . '/fontready-' . bin2hex( random_bytes( 8 ) );
 $origin = 'https://fontready.com'; $capability = true; $fail_update = false; $styles = array(); $checks = 0;
 class WP_Error { public $code; public $message; public $data; function __construct($code,$message,$data=array()) { $this->code=$code; $this->message=$message; $this->data=$data; } function get_error_code() { return $this->code; } }
-class WP_REST_Response { public $data; public $status; function __construct($data,$status) { $this->data=$data; $this->status=$status; } }
+class WP_REST_Response { public $data; public $status; function __construct($data,$status) { $this->data=$data; $this->status=$status; } function get_data(){return $this->data;} }
+class WP_REST_Request { private $body; function __construct($method){} function set_header($k,$v){} function set_body($body){$this->body=$body;} function get_body(){return $this->body;} function get_json_params(){return json_decode($this->body,true);} }
 class Request { private $payload; private $key; function __construct($payload,$key='') { $this->payload=$payload; $this->key=$key; } function get_body() { return json_encode($this->payload); } function get_json_params() { return $this->payload; } function get_header($name) { return $this->key; } }
+function wp_schedule_single_event(...$args) {}
 function add_action(...$args) {} function add_filter(...$args) {} function register_deactivation_hook(...$args) {}
 function get_option($name,$default=false) { global $options; return $options[$name] ?? $default; }
 function add_option($name,$value,...$args) { global $options; if(isset($options[$name]))return false; $options[$name]=$value; return true; }
@@ -125,6 +127,28 @@ $after=get_post_meta($native_id,NativeCustomFonts::FONT_META_KEY,true);
 check(count(array_filter($after,function($row){return $row['font_weight']==='100';}))===0,'Publishing does not resurrect deleted variant');
 check(in_array($manual,$after,true),'Manual variant remains intact');
 check($response->data['variants']===1&&$response->data['existing_variants']===2,'Publish response distinguishes current and retained registry variants');
+// A staged upload cannot publish anything until a complete verified commit.
+$chunk_payload=$grouped;foreach($chunk_payload['fonts'] as &$font){$font['family']='Chunked Font';}unset($font);
+$body=json_encode($chunk_payload);$id=str_repeat('c',32);$sha=hash('sha256',$body);$parts=str_split($body,2000);$before=count($native_posts);
+foreach($parts as $index=>$part){
+ $upload=array('version'=>2,'upload'=>array('id'=>$id,'index'=>$index,'total'=>count($parts),'sha256'=>$sha,'data'=>base64_encode($part)));
+ $result=FontReady_Plugin::import(new Request($upload));check($result instanceof WP_REST_Response&&$result->data['received']===$index+1,'Chunk acknowledgement');
+ $retry=FontReady_Plugin::import(new Request($upload));check($retry instanceof WP_REST_Response&&$retry->data['received']===$index+1,'Repeated chunk idempotent');
+ check(count($native_posts)===$before,'No installation before commit');
+ if($index===0){$early=FontReady_Plugin::import(new Request(array('version'=>2,'upload'=>array('id'=>$id,'commit'=>true))));check(is_wp_error($early),'Incomplete upload cannot commit');}
+}
+$state=get_option(FontReady_Transfer::STATE);check((fileperms($state['path'])&0777)===0600,'Private temporary file');
+$commit=array('version'=>2,'upload'=>array('id'=>$id,'commit'=>true));$result=FontReady_Plugin::import(new Request($commit));
+check($result instanceof WP_REST_Response&&$result->data['formats']===array('woff2','woff','ttf','svg','eot'),'Complete chunked package installs all formats');
+$count=count($native_posts);$retry=FontReady_Plugin::import(new Request($commit));check($retry instanceof WP_REST_Response&&count($native_posts)===$count,'Repeated commit does not duplicate fonts');
+check(!file_exists($state['path']),'Temporary file removed after commit');
+$invalid=$upload;$invalid['upload']['id']='../../escape';check(is_wp_error(FontReady_Plugin::import(new Request($invalid))),'Unsafe upload ID rejected');
+$invalid=$upload;$invalid['upload']['data']=base64_encode(str_repeat('x',FontReady_Transfer::CHUNK+1));check(is_wp_error(FontReady_Plugin::import(new Request($invalid))),'Oversize chunk rejected');
+$invalid=$upload;$invalid['upload']['id']=str_repeat('d',32);$invalid['upload']['index']=0;$invalid['upload']['total']=1;$invalid['upload']['sha256']=str_repeat('0',64);$invalid['upload']['data']=base64_encode('bad package');FontReady_Plugin::import(new Request($invalid));
+check(is_wp_error(FontReady_Plugin::import(new Request(array('version'=>2,'upload'=>array('id'=>str_repeat('d',32),'commit'=>true))))),'Checksum mismatch rejected');
+$state=get_option(FontReady_Transfer::STATE);$state['expires']=time()-1;update_option(FontReady_Transfer::STATE,$state);FontReady_Transfer::expire();check(!get_option(FontReady_Transfer::STATE)&&!file_exists($state['path']),'Expired upload cleaned without installation');
+$invalid=$upload;$invalid['upload']['id']=array('invalid');check(is_wp_error(FontReady_Plugin::import(new Request($invalid))),'Non-string upload ID rejected');
+
 $bad=$grouped['fonts'][3];$bad['data']=base64_encode('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><font id="x"><font-face units-per-em="1000"/></font></svg>');
 check(is_wp_error(fontready_validate_fonts(array('version'=>1,'fonts'=>array($bad)))),'Active SVG rejected');
 $bad['data']=base64_encode('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><font id="x"><font-face units-per-em="1000"/></font></svg>');
@@ -178,6 +202,7 @@ $_POST=array();$_GET=array('fontready_connect'=>str_repeat('b',64));
 ob_start();FontReady_Plugin::page();$html=ob_get_clean();
 check(strpos($html,'Fonts installed')!==false&&strpos($html,'Website connection')!==false,'Dashboard connection and count');
 check(strpos($html,$details['key'])===false&&strpos($html,'Generate connection key')===false,'No visible credentials');
+$_GET=array();ob_start();FontReady_Plugin::page();$connected_html=ob_get_clean();check(strpos($connected_html,'Convert &amp; publish fonts')!==false||strpos($connected_html,'Convert & publish fonts')!==false,'Connected dashboard uses conversion CTA');
 check(strpos($html,'Elementor Pro is installed')!==false&&strpos($html,'wordpress.example')!==false,'Domain and Pro confirmation');
 $_POST=array('fontready_action'=>'disconnect');
 try{FontReady_Plugin::connect();}catch(RedirectResult $redirect){check(!get_option(FontReady_Plugin::CONNECTION),'Disconnect revokes authorization');}

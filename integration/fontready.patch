@@ -578,11 +578,12 @@ index 50a906b..93d08b9 100644
 +    fixture.write_text(json.dumps({'version': 1, 'fonts': fonts, 'elementor_fonts':grouped}))
      subprocess.run([php, '-n', str(root / 'wordpress' / 'tests' / 'plugin.php'), str(fixture)], check=True)
 diff --git a/scripts/check_wordpress_ui.cjs b/scripts/check_wordpress_ui.cjs
-index 90e70ae..8747e05 100644
+index 90e70ae..bb87dcd 100644
 --- a/scripts/check_wordpress_ui.cjs
 +++ b/scripts/check_wordpress_ui.cjs
-@@ -1,22 +1,32 @@
+@@ -1,22 +1,45 @@
  const fs=require('fs'),vm=require('vm'),assert=require('assert');
++const {webcrypto}=require('crypto');
  const source=fs.readFileSync('static/wordpress.js','utf8');
  const good={endpoint:'https://site.example/wp-json/fontready/v1/fonts',status:'https://site.example/wp-json/fontready/v1/connection',site:'https://site.example/',key:'a'.repeat(64),expires:Math.floor(Date.now()/1000)+3600};
 -function setup({preview=false,expired=false,code=200,connection=good,callback=null}={}){
@@ -590,11 +591,11 @@ index 90e70ae..8747e05 100644
 - const saved=new Map();if(connection)saved.set('fontready.website.v2',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
 - const calls=[];const context={window:{fontreadyCallback:callback},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},location:{assign(url){calls.push({kind:'navigate',url})}},document:{getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
 - vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved};
-+function setup({preview=false,expired=false,code=200,connection=good,callback=null,elementor=false,kit=null,failAt=null,timeout=false,offline=false,malformed=null}={}){
++function setup({preview=false,expired=false,code=200,connection=good,callback=null,elementor=false,kit=null,failAt=null,timeout=false,offline=false,malformed=null,chunked=false,payloadSize=0,failOnce=false}={}){
 + const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-site','wordpress-pro','wordpress-connect','wordpress-plugin','website-confirmation','elementor-manage','result','connection-status','wordpress-disconnect','elementor-progress'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:'',hidden:false,scrollIntoView(){}};
 + const saved=new Map();if(connection)saved.set('fontready.website.v3',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
 + if(kit){saved.set('fontready.selected-kit',kit);saved.set('fontready.pending-publish',kit);}
-+ const calls=[],listeners={};const context={window:{fontreadyCallback:callback,addEventListener:(name,fn)=>listeners[name]=fn},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},history:{replaceState(){}},location:{href:'https://fontready.com/font-to-elementor-pro/'+(kit?'?kit='+kit:''),assign(url){calls.push({kind:'navigate',url})}},document:{body:{dataset:{elementor:elementor?'true':'false'}},getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,navigator:{onLine:!offline},csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});if(path.endsWith('/complete/'))return {job:kit};if(path.startsWith('/api/conversions/')&&!options)return {id:kit,state:'ready',expires_at:new Date(Date.now()+60000).toISOString(),results:[]};return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});const phase=path.includes('connection')?'verify':'publish';if(failAt===phase){const error=new Error('Failed to fetch');if(timeout)error.name='TimeoutError';throw error;}return {ok:code===200,status:code,json:async()=>{if(malformed===phase)throw new Error('Unexpected token <');return code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,native_custom_fonts:true,multi_format_import:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'};}}}};
++ const calls=[],listeners={};let failedOnce=false;const context={window:{fontreadyCallback:callback,addEventListener:(name,fn)=>listeners[name]=fn},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},history:{replaceState(){}},location:{href:'https://fontready.com/font-to-elementor-pro/'+(kit?'?kit='+kit:''),assign(url){calls.push({kind:'navigate',url})}},document:{body:{dataset:{elementor:elementor?'true':'false'}},getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,TextEncoder,Uint8Array,String,crypto:webcrypto,btoa,navigator:{onLine:!offline},csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});if(path.endsWith('/complete/'))return {job:kit};if(path.startsWith('/api/conversions/')&&!options)return {id:kit,state:'ready',expires_at:new Date(Date.now()+60000).toISOString(),results:[]};return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[],padding:'x'.repeat(payloadSize)}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});const part=options.body?JSON.parse(options.body):null;const phase=path.includes('connection')?'verify':part?.upload&&!part.upload.commit?'upload':'publish';if(failAt===phase&&(!failOnce||!failedOnce)){failedOnce=true;const error=new Error('Failed to fetch');if(timeout)error.name='TimeoutError';throw error;}return {ok:code===200,status:code,json:async()=>{if(malformed===phase)throw new Error('Unexpected token <');return code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,native_custom_fonts:true,multi_format_import:true,chunked_import:chunked,families:1,variants:1}:part?.upload&&!part.upload.commit?{received:part.upload.index+1,total:part.upload.total}:{imported:1,families:['Example']}):{message:'Reconnect'};}}}};
 + context.showResult=job=>{context.activeJob=job;};vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved,listeners};
  }
  (async()=>{
@@ -619,6 +620,18 @@ index 90e70ae..8747e05 100644
 + x=setup({failAt:'verify',timeout:true});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes('contact'),'Timeout has contextual website recovery');
 + x=setup({malformed:'publish'});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes('may already be installed'),'Malformed publishing acknowledgement requires checking native fonts');
 + for(const [code,phrase] of [[401,'expired'],[403,'security'],[404,'plugin endpoint'],[413,'too large'],[429,'Wait a moment']]){x=setup({code});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes(phrase),'Actionable HTTP '+code);if(code===401){check(!x.nodes['website-confirmation'].hidden,'Expired authorization reveals reconnect form');check(x.nodes['wordpress-publish'].textContent.includes('Reconnect'),'Expired authorization relabels primary action');}}
++ x=setup({chunked:true,payloadSize:1100000});await x.nodes['wordpress-publish'].onclick();
++ const uploads=x.calls.filter(c=>c.kind==='wp'&&c.options.body).map(c=>JSON.parse(c.options.body));
++ const parts=uploads.filter(c=>c.upload&&!c.upload.commit);check(parts.length>1,'Large package uses small upload requests');
++ check(x.calls.filter(c=>c.kind==='wp'&&c.options.body).every(c=>Buffer.byteLength(c.options.body)<256*1024),'Each upload is below the live server accepted probe size');
++ const assembled=Buffer.concat(parts.map(c=>Buffer.from(c.upload.data,'base64'))).toString();check(JSON.parse(assembled).padding.length===1100000,'All uploaded package bytes preserved');
++ check(uploads.at(-1).upload.commit===true,'Installation only requested after all pieces');
++ check(x.nodes['wordpress-status'].textContent.includes('Published'),'Chunked publication completes');
++ check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Chunking keeps credential out of Django');
++ x=setup({chunked:true,payloadSize:300000,failAt:'upload',failOnce:true});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes('Published'),'Lost chunk acknowledgement retried automatically');
++ const retried=x.calls.filter(c=>c.kind==='wp'&&c.options.body).map(c=>JSON.parse(c.options.body));check(retried[0].upload.id===retried[1].upload.id&&retried[0].upload.index===retried[1].upload.index,'Chunk retry preserves transfer and index');
++ x=setup({chunked:true,payloadSize:300000,failAt:'upload'});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes('not been submitted'),'Upload interruption distinguishes no installation');check(!x.calls.some(c=>c.options?.body&&JSON.parse(c.options.body).upload?.commit),'Incomplete upload never committed');
++ x=setup({payloadSize:300000});await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-status'].textContent.includes('0.4.2'),'Older plugin requires update for large package');check(!x.calls.some(c=>c.kind==='wp'&&c.options.body),'Large package not sent to old plugin');
 + const app=fs.readFileSync('static/app.js','utf8');const apiSource=app.slice(app.indexOf('async function api('),app.indexOf('function updateButton('));
 + for(const sample of [{network:true,phrase:'Could not reach FontReady'},{status:403,phrase:'session'},{status:413,phrase:'too large'},{status:429,phrase:'busy'},{status:503,phrase:'could not complete'},{status:200,malformed:true,phrase:'unexpected response'}]){const apiContext={fetch:async()=>{if(sample.network)throw new Error('Failed to fetch');return {ok:sample.status===200,status:sample.status,json:async()=>{if(sample.malformed)throw new Error('Unexpected token');return {};}}},Error};vm.createContext(apiContext);vm.runInContext(apiSource,apiContext);try{await apiContext.api('/api/conversions/');check(false,'Error expected');}catch(error){check(error.message.includes(sample.phrase),'FontReady request has actionable error');check(!error.message.includes('Failed to fetch'),'FontReady hides raw browser transport error');}}
   const order=[];const callbackContext={location:{hash:'#fontready='+encodeURIComponent(JSON.stringify(good)),pathname:'/font-to-elementor-pro/',search:''},history:{replaceState(){order.push('stripped')}},window:{},JSON,decodeURIComponent};vm.runInNewContext(fs.readFileSync('static/wordpress-callback.js','utf8'),callbackContext);check(order[0]==='stripped'&&callbackContext.window.fontreadyCallback.key===good.key,'Fragment stripped synchronously');
@@ -862,10 +875,10 @@ index 6912ec7..ecf9b93 100644
    if(!previewOnly)refreshHistory();
  }
 diff --git a/static/wordpress.js b/static/wordpress.js
-index 578f2b7..af87794 100644
+index 578f2b7..564150d 100644
 --- a/static/wordpress.js
 +++ b/static/wordpress.js
-@@ -1,12 +1,35 @@
+@@ -1,12 +1,66 @@
  /* Opaque authentication stays in this browser tab; the user never copies a key. */
  (() => {
    const get = id => document.getElementById(id);
@@ -887,6 +900,7 @@ index 578f2b7..af87794 100644
 +    try {response=await fetch(url,options);}
 +    catch(error){
 +      const timeout=error.name==='TimeoutError'||error.name==='AbortError';
++      if(phase==='upload'){const problem=new Error(`Font upload to ${host} ${timeout?'timed out':'was interrupted'}. The complete package has not been submitted for installation. Retry publishing; your prepared font is kept.`);problem.transport=true;throw problem;}
 +      if(phase==='publish')throw new Error(`Publishing confirmation from ${host} ${timeout?'timed out':'was interrupted'}. The font may already be installed. Check Elementor Custom Fonts on your website before retrying. Your prepared font is still selected.`);
 +      const offline=typeof navigator!=='undefined'&&navigator.onLine===false;
 +      throw new Error(offline?'You appear to be offline. Reconnect to the internet, then retry. Your prepared font is still selected.':`Could not ${timeout?'contact':'read a response from'} ${host} to verify the website connection. No font files were sent. Retry; if this continues, reconnect the website and check that its security settings allow FontReady requests.`);
@@ -900,10 +914,40 @@ index 578f2b7..af87794 100644
 +    if(!data)throw new Error(phase==='publish'?`The response from ${host} did not confirm publishing. Check Elementor Custom Fonts before retrying; your font may already be installed.`:`${host} returned an unexpected response instead of confirming FontReady. Check the plugin is active and your website URL is correct, then reconnect.`);
 +    return data;
 +  }
++  async function publishPackage(payload,capability,status) {
++    const options = () => ({method:'POST',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${connection.key}`}});
++    const body=JSON.stringify(payload);
++    if(capability.chunked_import!==true){
++      if(new TextEncoder().encode(body).length>256*1024)throw new Error('Update the installed FontReady plugin to 0.4.2 to publish this font using smaller upload requests. Your website connection is kept.');
++      return wordpressRequest(connection.endpoint,{...options(),body},'publish',connection.site);
++    }
++    const bytes=new TextEncoder().encode(body);
++    if(bytes.length>36*1024*1024)throw new Error('This font package is too large. Convert a smaller font and try again.');
++    const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',bytes));
++    const sha256=Array.from(digest,b=>b.toString(16).padStart(2,'0')).join('');
++    const id=crypto.randomUUID().replaceAll('-',''),size=128*1024,total=Math.ceil(bytes.length/size);
++    for(let index=0;index<total;index++){
++      status(`Uploading font files: ${Math.round(index/total*100)}%`);
++      stage(3,'Uploading your font',`Sending part ${index+1} of ${total} to ${new URL(connection.site).host}.`);
++      const part=bytes.subarray(index*size,(index+1)*size);
++      // Avoid spreading a large typed array into function arguments.
++      let binary='';for(let offset=0;offset<part.length;offset+=8192)binary+=String.fromCharCode(...part.subarray(offset,offset+8192));
++      const requestBody=JSON.stringify({version:2,upload:{id,index,total,sha256,data:btoa(binary)}});
++      let receipt;
++      for(let attempt=0;attempt<2;attempt++){
++        try{receipt=await wordpressRequest(connection.endpoint,{...options(),body:requestBody},'upload',connection.site);break;}
++        catch(error){if(!error.transport||attempt===1)throw error;}
++      }
++      if(receipt?.received!==index+1||receipt?.total!==total)throw new Error('Your website did not acknowledge the font upload. Retry publishing; your prepared font is kept.');
++    }
++    status('Upload complete. Installing all five formats in Elementor…');
++    stage(3,'Installing your font','Your website is checking the complete package and saving it in Elementor Custom Fonts.');
++    return wordpressRequest(connection.endpoint,{...options(),body:JSON.stringify({version:2,upload:{id,commit:true}})},'publish',connection.site);
++  }
    const clear = () => { connection = null; sessionStorage.removeItem(storageKey); };
    function endpoint(value, route, site) {
      const url = new URL(value), origin = new URL(site);
-@@ -26,23 +49,37 @@
+@@ -26,23 +80,37 @@
    try { const saved = JSON.parse(sessionStorage.getItem(storageKey) || 'null'); if (saved) connection = validate(saved, saved.site); }
    catch { try { clear(); } catch {} }
    const showConnection = () => {
@@ -955,7 +999,7 @@ index 578f2b7..af87794 100644
    const callback = window.fontreadyCallback;
    delete window.fontreadyCallback;
    if (callback) (async () => {
-@@ -51,21 +88,23 @@
+@@ -51,21 +119,23 @@
        const requested = sessionStorage.getItem('fontready.requested-site');
        if (!requested || !/^[a-f0-9]{64}$/.test(callback.state)) throw new Error('Start your connection from FontReady again.');
        const candidate = validate(callback, requested);
@@ -985,7 +1029,7 @@ index 578f2b7..af87794 100644
    };
    const publish = get('wordpress-publish');
    if (!publish) return;
-@@ -73,26 +112,46 @@
+@@ -73,26 +143,46 @@
      if (publishing) return;
      const status = (text, error=false) => message(text,error,'wordpress-status');
      if (previewOnly) return status('Publishing is available in the running FontReady application.',true);
@@ -1018,7 +1062,7 @@ index 578f2b7..af87794 100644
 +      phase='publish';publish.textContent='Publishing…';
 +      stage(3,'Publishing your font',`Sending your font files to ${host}. Keep this page open.`);
 +      status(`Publishing your font to ${host}…`);
-+      const data=await wordpressRequest(connection.endpoint,{method:'POST',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${connection.key}`},body:JSON.stringify(payload)},'publish',connection.site);
++      const data=await publishPackage(payload,capability,status);
        if (!Array.isArray(data?.families) || !Number.isInteger(data?.imported)) throw new Error('Check WordPress → FontReady to confirm the installation before retrying.');
 -      status(`Installed on ${host}: ${data.families.join(', ')}. Refresh Elementor and select your font under FontReady.`);
 +      status(`Published to Elementor Custom Fonts on ${host}: ${data.families.join(', ')}. Refresh the Elementor editor to use them.`);
@@ -1046,7 +1090,7 @@ index 578f2b7..af87794 100644
 +  });
  })();
 diff --git a/templates/index.html b/templates/index.html
-index 86ad04a..cda509f 100644
+index 86ad04a..16a6de4 100644
 --- a/templates/index.html
 +++ b/templates/index.html
 @@ -18,24 +18,21 @@
@@ -1054,12 +1098,12 @@ index 86ad04a..cda509f 100644
    {% if analytics_enabled %}<script async src="https://www.googletagmanager.com/gtag/js?id=G-ZMTELBECKT"></script><script src="{% static 'analytics.js' %}" defer></script>{% endif %}
    <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
 -  <link rel="stylesheet" href="{% static 'app.css' %}">
-+  <link rel="stylesheet" href="{% static 'app.css' %}?v=20261006-3">
++  <link rel="stylesheet" href="{% static 'app.css' %}?v=20261006-4">
    <script src="{% static 'i18n.js' %}" defer></script>
 -  <script src="{% static 'app.js' %}" defer></script>
 -  <script src="{% static 'wordpress.js' %}" defer></script>
-+  <script src="{% static 'app.js' %}?v=20261006-3" defer></script>
-+  <script src="{% static 'wordpress.js' %}?v=20261006-3" defer></script>
++  <script src="{% static 'app.js' %}?v=20261006-4" defer></script>
++  <script src="{% static 'wordpress.js' %}?v=20261006-4" defer></script>
  </head>
 -<body data-interface-language="{{ language }}">
 +<body data-interface-language="{{ language }}"{% if elementor_page %} data-elementor="true"{% endif %}>
