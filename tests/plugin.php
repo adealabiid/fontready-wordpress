@@ -2,6 +2,7 @@
 /** Isolated contract tests; these stub WordPress APIs, not a live installation. */
 define( 'ABSPATH', __DIR__ );
 define( 'HOUR_IN_SECONDS', 3600 );
+define( 'ELEMENTOR_PRO_VERSION', 'test' );
 $options = array(); $uploads = sys_get_temp_dir() . '/fontready-' . bin2hex( random_bytes( 8 ) );
 $origin = 'https://fontready.com'; $capability = true; $fail_update = false; $styles = array(); $checks = 0;
 class WP_Error { public $code; public $message; public $data; function __construct($code,$message,$data=array()) { $this->code=$code; $this->message=$message; $this->data=$data; } function get_error_code() { return $this->code; } }
@@ -80,3 +81,50 @@ unset($options['fontready_import_lock']);
 foreach(glob($uploads.'/fontready/*') as $file)unlink($file);
 rmdir($uploads.'/fontready'); rmdir($uploads);
 echo "Passed $checks plugin contract checks.\n";
+
+// Administrator redirect and dashboard contracts.
+define('DAY_IN_SECONDS',86400);
+class RedirectResult extends Exception { public $url; function __construct($url){$this->url=$url;} }
+$nonce_ok=true;
+function current_user_can(...$args){return user_can(...$args);}
+function check_admin_referer($action){global $nonce_ok;if(!$nonce_ok)throw new Exception('Invalid nonce');}
+function wp_unslash($value){return $value;}
+function sanitize_key($value){return $value;}
+function sanitize_text_field($value){return $value;}
+function wp_parse_url($url,$component){return parse_url($url,$component);}
+function rest_url($route=''){return 'https://wordpress.example/wp-json/'.$route;}
+function home_url($path=''){return 'https://wordpress.example'.$path;}
+function admin_url($path=''){return 'https://wordpress.example/wp-admin/'.$path;}
+function get_current_user_id(){return 1;}
+function wp_die($message){throw new Exception($message);}
+function wp_redirect($url){throw new RedirectResult($url);}
+function wp_safe_redirect($url){throw new RedirectResult($url);}
+function esc_html__($value,$domain){return $value;}
+function esc_html($value){return htmlspecialchars((string)$value,ENT_QUOTES);}
+function esc_attr($value){return esc_html($value);}
+function wp_nonce_field($action){echo '<input name="_wpnonce" value="fixture">';}
+function disabled($condition){if($condition)echo 'disabled';}
+$_POST=array('fontready_action'=>'connect','fontready_state'=>str_repeat('b',64),'fontready_confirm'=>'1');
+$nonce_ok=false;
+try{FontReady_Plugin::connect();check(false,'Nonce required');}catch(Exception $error){check($error->getMessage()==='Invalid nonce','Nonce required');}
+$nonce_ok=true;$_POST['fontready_state']='https://evil.example/';
+try{FontReady_Plugin::connect();check(false,'State validation');}catch(Exception $error){check(!($error instanceof RedirectResult),'Invalid state rejected');}
+$_POST['fontready_state']=str_repeat('b',64);unset($_POST['fontready_confirm']);
+try{FontReady_Plugin::connect();check(false,'Confirmation required');}catch(Exception $error){check(!($error instanceof RedirectResult),'Confirmation required');}
+$_POST['fontready_confirm']='1';
+try{FontReady_Plugin::connect();check(false,'Redirect expected');}catch(RedirectResult $redirect){
+    check(strpos($redirect->url,'https://fontready.com/font-to-elementor-pro/#fontready=')===0,'Fixed callback origin');
+    $details=json_decode(rawurldecode(substr($redirect->url,strpos($redirect->url,'#fontready=')+11)),true);
+    check(preg_match('/^[a-f0-9]{64}$/',$details['key'])===1,'Automatic opaque credential');
+    $stored=get_option(FontReady_Plugin::CONNECTION);
+    check($stored['hash']===hash('sha256',$details['key'])&&!isset($stored['key']),'Only hash stored in WordPress');
+    check($stored['expires']>time()+6*86400,'Seamless seven-day authorization');
+}
+$_POST=array();$_GET=array('fontready_connect'=>str_repeat('b',64));
+ob_start();FontReady_Plugin::page();$html=ob_get_clean();
+check(strpos($html,'Fonts installed')!==false&&strpos($html,'Website connection')!==false,'Dashboard connection and count');
+check(strpos($html,$details['key'])===false&&strpos($html,'Generate connection key')===false,'No visible credentials');
+check(strpos($html,'Elementor Pro is installed')!==false&&strpos($html,'wordpress.example')!==false,'Domain and Pro confirmation');
+$_POST=array('fontready_action'=>'disconnect');
+try{FontReady_Plugin::connect();}catch(RedirectResult $redirect){check(!get_option(FontReady_Plugin::CONNECTION),'Disconnect revokes authorization');}
+echo "Passed administrator redirect and dashboard contracts; total $checks checks.\n";

@@ -3,7 +3,7 @@
  * Plugin Name: FontReady
  * Plugin URI: https://fontready.com
  * Description: Publish converted FontReady fonts to your own WordPress site and use them in Elementor. No FontReady account required.
- * Version: 0.1.0
+ * Version: 0.2.0
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Author: Ademola Alabi
@@ -20,6 +20,8 @@ final class FontReady_Plugin {
     const ORIGIN = 'https://fontready.com';
 
     public static function init() {
+        add_action( 'admin_init', array( __CLASS__, 'connect' ) );
+        add_action( 'admin_enqueue_scripts', array( __CLASS__, 'admin_styles' ) );
         add_action( 'admin_menu', array( __CLASS__, 'menu' ) );
         add_action( 'rest_api_init', array( __CLASS__, 'routes' ) );
         add_filter( 'rest_pre_serve_request', array( __CLASS__, 'cors' ), 20, 4 );
@@ -43,12 +45,13 @@ final class FontReady_Plugin {
             $format = array( 'ttf' => 'truetype', 'otf' => 'opentype', 'woff' => 'woff', 'woff2' => 'woff2' )[ $face['format'] ];
             $css .= '@font-face{font-family:' . wp_json_encode( $face['family'], JSON_UNESCAPED_UNICODE ) . ';src:url(' . wp_json_encode( esc_url_raw( $face['url'] ) ) . ') format("' . $format . '");font-weight:' . $face['weight'] . ';font-style:' . $face['style'] . ';font-display:swap;}';
         }
-        wp_register_style( 'fontready', false, array(), '0.1.0' );
+        wp_register_style( 'fontready', false, array(), '0.2.0' );
         wp_enqueue_style( 'fontready' );
         wp_add_inline_style( 'fontready', $css );
     }
 
     public static function routes() {
+        register_rest_route( 'fontready/v1', '/connection', array( 'methods' => 'GET', 'callback' => array( __CLASS__, 'status' ), 'permission_callback' => array( __CLASS__, 'authorize' ) ) );
         register_rest_route( 'fontready/v1', '/fonts', array( 'methods' => 'POST', 'callback' => array( __CLASS__, 'import' ), 'permission_callback' => array( __CLASS__, 'authorize' ) ) );
     }
     public static function cors( $served, $result, $request, $server ) {
@@ -59,7 +62,7 @@ final class FontReady_Plugin {
         header( 'Cache-Control: private, no-store' );
         if ( get_http_origin() === self::ORIGIN ) {
             header( 'Access-Control-Allow-Origin: ' . self::ORIGIN );
-            header( 'Access-Control-Allow-Methods: POST, OPTIONS' );
+            header( 'Access-Control-Allow-Methods: GET, POST, OPTIONS' );
             header( 'Access-Control-Allow-Headers: Authorization, Content-Type' );
         }
         return $served;
@@ -69,8 +72,9 @@ final class FontReady_Plugin {
         $authorization = $request->get_header( 'authorization' );
         $origin = get_http_origin();
         if ( ( $origin && $origin !== self::ORIGIN ) || ! preg_match( '/\ABearer ([a-f0-9]{64})\z/', $authorization ?? '', $match ) || empty( $connection['hash'] ) || ( $connection['expires'] ?? 0 ) <= time() || ! hash_equals( $connection['hash'], hash( 'sha256', $match[1] ) ) || ! user_can( (int) ( $connection['user'] ?? 0 ), 'manage_options' ) || ! user_can( (int) ( $connection['user'] ?? 0 ), 'upload_files' ) ) {
-            return new WP_Error( 'fontready_auth', 'Connection expired or revoked. Generate a new key in WordPress → FontReady.', array( 'status' => 401 ) );
+            return new WP_Error( 'fontready_auth', 'Reconnect your website through FontReady.', array( 'status' => 401 ) );
         }
+        if ( ! self::pro() ) { return new WP_Error( 'fontready_pro', 'Activate Elementor Pro to publish fonts.', array( 'status' => 409 ) ); }
         return true;
     }
 
@@ -111,64 +115,64 @@ final class FontReady_Plugin {
         } finally { delete_option( 'fontready_import_lock' ); }
     }
 
+    public static function pro() { return defined( 'ELEMENTOR_PRO_VERSION' ); }
+    public static function status() {
+        $faces = get_option( self::REGISTRY, array() );
+        return new WP_REST_Response( array( 'site' => home_url( '/' ), 'elementor_pro' => self::pro(), 'families' => count( array_unique( array_column( $faces, 'family' ) ) ), 'variants' => count( $faces ) ), 200 );
+    }
+    public static function admin_styles( $hook ) {
+        if ( $hook === 'toplevel_page_fontready' ) { wp_enqueue_style( 'fontready-admin', plugins_url( 'assets/admin.css', __FILE__ ), array(), '0.2.0' ); }
+    }
+    public static function connect() {
+        if ( ! isset( $_POST['fontready_action'] ) || ! current_user_can( 'manage_options' ) ) { return; }
+        check_admin_referer( 'fontready_manage' );
+        $action = sanitize_key( wp_unslash( $_POST['fontready_action'] ) );
+        if ( $action === 'disconnect' ) {
+            delete_option( self::CONNECTION );
+            wp_safe_redirect( admin_url( 'admin.php?page=fontready' ) ); exit;
+        }
+        if ( $action !== 'connect' ) { return; }
+        $state = isset( $_POST['fontready_state'] ) ? sanitize_text_field( wp_unslash( $_POST['fontready_state'] ) ) : '';
+        if ( ! preg_match( '/\A[a-f0-9]{64}\z/', $state ) || empty( $_POST['fontready_confirm'] ) || ! self::pro() || ! current_user_can( 'upload_files' ) || wp_parse_url( rest_url(), PHP_URL_SCHEME ) !== 'https' ) {
+            wp_die( esc_html__( 'Confirm your website, activate Elementor Pro and use HTTPS before connecting.', 'fontready' ) );
+        }
+        $secret = bin2hex( random_bytes( 32 ) );
+        $expires = time() + 7 * DAY_IN_SECONDS;
+        if ( ! update_option( self::CONNECTION, array( 'hash' => hash( 'sha256', $secret ), 'expires' => $expires, 'user' => get_current_user_id(), 'connected' => time() ), false ) ) {
+            wp_die( esc_html__( 'The connection could not be saved. Please try again.', 'fontready' ) );
+        }
+        // Fixed service destination; credentials live in a fragment, never a query or server log.
+        $payload = array( 'state' => $state, 'endpoint' => rest_url( 'fontready/v1/fonts' ), 'status' => rest_url( 'fontready/v1/connection' ), 'key' => $secret, 'expires' => $expires, 'site' => home_url( '/' ) );
+        wp_redirect( self::ORIGIN . '/font-to-elementor-pro/#fontready=' . rawurlencode( wp_json_encode( $payload, JSON_UNESCAPED_SLASHES ) ) ); exit;
+    }
     public static function page() {
         if ( ! current_user_can( 'manage_options' ) ) { return; }
-        $key = '';
-        $notice = '';
-        if ( isset( $_POST['fontready_action'] ) ) {
-            check_admin_referer( 'fontready_manage' );
-            $action = sanitize_key( wp_unslash( $_POST['fontready_action'] ) );
-            if ( $action === 'connect' ) {
-                if ( ! current_user_can( 'upload_files' ) || wp_parse_url( rest_url(), PHP_URL_SCHEME ) !== 'https' ) { $notice = 'Publishing requires HTTPS and permission to upload files.'; }
-                else {
-                    $key = bin2hex( random_bytes( 32 ) );
-                    update_option( self::CONNECTION, array( 'hash' => hash( 'sha256', $key ), 'expires' => time() + HOUR_IN_SECONDS, 'user' => get_current_user_id() ), false );
-                    $notice = 'New connection key generated. It expires in one hour. Previous keys are revoked.';
-                }
-            } elseif ( $action === 'revoke' ) { delete_option( self::CONNECTION ); $notice = 'Connection revoked. Published fonts remain on this site.'; }
-            elseif ( $action === 'remove' && isset( $_POST['family'] ) ) {
-                if ( ! add_option( 'fontready_import_lock', time(), '', false ) ) { $notice = 'Another font change is running. Try again shortly.'; }
-                else {
-                    try {
-                        $family = sanitize_text_field( wp_unslash( $_POST['family'] ) );
-                        $faces = get_option( self::REGISTRY, array() );
-                        $removed = array_filter( $faces, function( $face ) use ( $family ) { return $face['family'] === $family; } );
-                        $remaining = array_diff_key( $faces, $removed );
-                        if ( ! $removed || update_option( self::REGISTRY, $remaining, false ) ) { foreach ( $removed as $face ) { wp_delete_file( $face['path'] ); } $notice = 'Font family removed.'; }
-                        else { $notice = 'The font family could not be removed.'; }
-                    } finally { delete_option( 'fontready_import_lock' ); }
-                }
-            }
-        }
         $faces = get_option( self::REGISTRY, array() );
         $connection = get_option( self::CONNECTION, array() );
+        $connected = ! empty( $connection['expires'] ) && $connection['expires'] > time();
+        $state = isset( $_GET['fontready_connect'] ) ? sanitize_text_field( wp_unslash( $_GET['fontready_connect'] ) ) : '';
+        $pending = preg_match( '/\A[a-f0-9]{64}\z/', $state );
         ?>
-        <div class="wrap" style="max-width:960px">
-            <h1>FontReady <span style="font-size:14px;font-weight:400">0.1.0</span></h1>
-            <p>Convert on FontReady. Publish here. Your fonts stay on your WordPress site.</p>
-            <?php if ( $notice ) { ?><div class="notice notice-info"><p><?php echo esc_html( $notice ); ?></p></div><?php } ?>
-            <div class="card" style="max-width:none;padding:24px">
-                <h2>Connect without an account</h2>
-                <ol><li>Generate a temporary key below.</li><li>Open <a href="https://fontready.com" target="_blank" rel="noopener noreferrer">FontReady</a> and convert your fonts. Choose WOFF2 for modern browsers.</li><li>Choose “Publish to WordPress”, paste the connection details, review the families and publish.</li></ol>
-                <p><strong>Status:</strong> <?php echo ! empty( $connection['expires'] ) && $connection['expires'] > time() ? 'Key active until ' . esc_html( wp_date( 'H:i T', $connection['expires'] ) ) : 'Disconnected'; ?></p>
-                <form method="post"><?php wp_nonce_field( 'fontready_manage' ); ?><button class="button button-primary" name="fontready_action" value="connect">Generate connection key</button> <button class="button" name="fontready_action" value="revoke">Revoke connection</button></form>
-                <?php if ( $key ) { ?>
-                    <p><label for="fontready-details"><strong>Copy these connection details to FontReady:</strong></label></p>
-                    <textarea id="fontready-details" class="large-text code" rows="4" readonly autocomplete="off"><?php echo esc_textarea( wp_json_encode( array( 'endpoint' => rest_url( 'fontready/v1/fonts' ), 'key' => $key ), JSON_UNESCAPED_SLASHES ) ); ?></textarea>
-                    <p>Shown once. Keep this key private. It allows font publishing for one hour; you can revoke it above.</p>
-                <?php } ?>
-            </div>
-            <h2>Published fonts</h2>
-            <p>In Elementor, refresh the editor and choose your family under Typography → Font Family → FontReady. For other themes, apply the family with CSS.</p>
-            <table class="widefat striped"><thead><tr><th>Family</th><th>Weights and styles</th><th>Manage</th></tr></thead><tbody>
-            <?php foreach ( array_unique( array_column( $faces, 'family' ) ) as $family ) { ?>
-                <tr><td><?php echo esc_html( $family ); ?></td><td><?php echo esc_html( implode( ', ', array_map( function( $face ) { return $face['weight'] . ' ' . $face['style']; }, array_filter( $faces, function( $face ) use ( $family ) { return $face['family'] === $family; } ) ) ) ); ?></td><td><form method="post"><?php wp_nonce_field( 'fontready_manage' ); ?><input type="hidden" name="family" value="<?php echo esc_attr( $family ); ?>"><button class="button" name="fontready_action" value="remove">Remove family</button></form></td></tr>
-            <?php } ?>
-            <?php if ( ! $faces ) { ?><tr><td colspan="3">Your published fonts will appear here.</td></tr><?php } ?>
-            </tbody></table><p>Deactivation keeps fonts saved but stops loading them. Reactivate to restore them. Only publish fonts you have permission to use on your website.</p>
+        <div class="wrap fontready-admin">
+            <header class="fr-header"><span class="fr-mark" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="M11 29V11h16v5H16v4h8v5h-8v4Z" fill="currentColor"/><path d="m24 29 3 3 7-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h1><?php echo esc_html__( 'Font', 'fontready' ); ?><span><?php echo esc_html__( 'Ready', 'fontready' ); ?></span></h1><span class="fr-pill"><?php echo esc_html__( 'FOR ELEMENTOR PRO', 'fontready' ); ?></span></header>
+            <div class="fr-intro"><p class="fr-eyebrow"><?php echo esc_html__( 'YOUR FONTS. YOUR WEBSITE.', 'fontready' ); ?></p><h2><?php echo esc_html__( 'Ready for Elementor.', 'fontready' ); ?></h2><p><?php echo esc_html__( 'Convert with FontReady. Install here. Keep creating.', 'fontready' ); ?></p></div>
+            <div class="fr-grid"><section class="fr-card"><div class="fr-card-heading"><h3><?php echo esc_html__( 'Website connection', 'fontready' ); ?></h3><span class="fr-status <?php echo $connected ? 'is-connected' : ''; ?>"><?php echo $connected ? esc_html__( 'Connected', 'fontready' ) : esc_html__( 'Ready to connect', 'fontready' ); ?></span></div>
+                <p class="fr-domain"><?php echo esc_html( home_url( '/' ) ); ?></p>
+                <p><?php echo esc_html__( 'Your activated plugin allows FontReady to install fonts on this website. Connect through your WordPress administrator account.', 'fontready' ); ?></p>
+                <?php if ( ! self::pro() ) { ?><p class="fr-warning"><?php echo esc_html__( 'Activate Elementor Pro to connect this website.', 'fontready' ); ?></p><?php } ?>
+                <?php if ( $pending ) { ?>
+                    <form method="post"><?php wp_nonce_field( 'fontready_manage' ); ?><input type="hidden" name="fontready_state" value="<?php echo esc_attr( $state ); ?>">
+                    <label class="fr-confirm"><input type="checkbox" name="fontready_confirm" value="1" required><?php echo esc_html__( 'I confirm this is my website and Elementor Pro is installed. Connecting shares this domain and installation totals with FontReady.', 'fontready' ); ?></label>
+                    <button class="fr-button" name="fontready_action" value="connect" <?php disabled( ! self::pro() ); ?>><?php echo esc_html__( 'Continue to FontReady ↗', 'fontready' ); ?></button></form>
+                <?php } else { ?><a class="fr-button" href="https://fontready.com/font-to-elementor-pro/"><?php echo esc_html__( 'Connect on FontReady ↗', 'fontready' ); ?></a><?php } ?>
+                <?php if ( $connected ) { ?><form method="post" class="fr-disconnect"><?php wp_nonce_field( 'fontready_manage' ); ?><button name="fontready_action" value="disconnect"><?php echo esc_html__( 'Disconnect website', 'fontready' ); ?></button></form><?php } ?>
+                <p class="fr-footnote"><?php echo esc_html__( 'Only install fonts you have permission to use. Fonts stay on your website after the FontReady download expires.', 'fontready' ); ?></p>
+            </section><section class="fr-card fr-stat"><span class="fr-stat-icon" aria-hidden="true"><?php echo esc_html__( 'Aa', 'fontready' ); ?></span><p class="fr-number"><?php echo esc_html( count( array_unique( array_column( $faces, 'family' ) ) ) ); ?></p><h3><?php echo esc_html__( 'Fonts installed', 'fontready' ); ?></h3><p><?php echo esc_html__( 'with FontReady ·', 'fontready' ); ?><?php echo esc_html( count( $faces ) ); ?><?php echo esc_html__( 'variants', 'fontready' ); ?></p><div class="fr-stat-tip"><?php echo esc_html__( 'In Elementor, open Typography → Font Family → FontReady. Refresh the editor after installing fonts.', 'fontready' ); ?></div></section></div>
+            <footer class="fr-footer"><?php echo esc_html__( 'FontReady 0.2.0 ·', 'fontready' ); ?><a href="https://fontready.com/privacy/"><?php echo esc_html__( 'Privacy & service details', 'fontready' ); ?></a><span><?php echo esc_html__( 'Made for better typography.', 'fontready' ); ?></span></footer>
         </div>
         <?php
     }
+
 }
 FontReady_Plugin::init();
 register_deactivation_hook( __FILE__, function() { delete_option( FontReady_Plugin::CONNECTION ); delete_option( 'fontready_import_lock' ); } );

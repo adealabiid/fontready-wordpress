@@ -1,30 +1,22 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const source=fs.readFileSync('static/wordpress.js','utf8');
-function setup({preview=false,expired=false,code=200}={}){
- const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-connection','wordpress-license','wordpress-disconnect'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:'',addEventListener(name,fn){this[name]=fn}};
- const calls=[];
- const context={document:{getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});return {version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?{imported:1,families:['Example']}:{message:'Expired'}}}};
- vm.createContext(context);vm.runInContext(source,context);
- nodes['wordpress-connection'].value=JSON.stringify({endpoint:'https://site.example/wp-json/fontready/v1/fonts',key:'a'.repeat(64)});
- return {nodes,calls};
+const good={endpoint:'https://site.example/wp-json/fontready/v1/fonts',status:'https://site.example/wp-json/fontready/v1/connection',site:'https://site.example/',key:'a'.repeat(64),expires:Math.floor(Date.now()/1000)+3600};
+function setup({preview=false,expired=false,code=200,connection=good,callback=null}={}){
+ const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-site','wordpress-pro','wordpress-connect','connection-status','wordpress-disconnect'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:''};
+ const saved=new Map();if(connection)saved.set('fontready.website.v2',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
+ const calls=[];const context={window:{fontreadyCallback:callback},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},location:{assign(url){calls.push({kind:'navigate',url})}},document:{getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
+ vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved};
 }
 (async()=>{
  let checks=0;const check=(v,msg)=>{assert(v,msg);checks++};
- let x=setup();await x.nodes['wordpress-publish'].onclick();check(x.calls.length===0,'License confirmation required');
- x.nodes['wordpress-license'].checked=true;await x.nodes['wordpress-publish'].onclick();
- check(x.calls.length===2,'Bundle then publish');
- check(!JSON.stringify(x.calls[0]).includes('a'.repeat(64)),'Key never sent to Django');
- check(x.calls[1].options.headers.Authorization==='Bearer '+'a'.repeat(64),'Key only sent to WordPress');
- check(x.calls[1].options.credentials==='omit'&&x.calls[1].options.redirect==='error','No cookies or redirects');
- check(x.nodes['wordpress-status'].textContent.includes('Published to site.example'),'Confirmed success feedback');
- check(!x.nodes['wordpress-publish'].disabled,'Button restored');
- for(const endpoint of ['http://site.example/wp-json/fontready/v1/fonts','https://user:pass@site.example/wp-json/fontready/v1/fonts','https://site.example/elsewhere','https://site.example/wp-json/fontready/v1/fonts#secret']){
-  x=setup();x.nodes['wordpress-license'].checked=true;x.nodes['wordpress-connection'].value=JSON.stringify({endpoint,key:'a'.repeat(64)});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Unsafe destination rejected');
- }
- x=setup();x.nodes['wordpress-license'].checked=true;x.nodes['wordpress-connection'].value=JSON.stringify({endpoint:'https://site.example/?rest_route=/fontready/v1/fonts',key:'a'.repeat(64)});await x.nodes['wordpress-publish'].onclick();check(x.calls.length===2,'Query style REST supported');
- x=setup({expired:true});x.nodes['wordpress-license'].checked=true;await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Expired kit blocked');
- x=setup({preview:true});x.nodes['wordpress-license'].checked=true;await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Static preview cannot publish');
- x=setup({code:401});x.nodes['wordpress-license'].checked=true;await x.nodes['wordpress-publish'].onclick();check(x.nodes['wordpress-connection'].value==='','Expired key cleared');
- x=setup();x.nodes['wordpress-disconnect'].onclick();check(x.nodes['wordpress-connection'].value==='','Disconnect clears key');
- console.log(`Passed ${checks} publishing UI contract checks.`);
+ let x=setup();await x.nodes['wordpress-publish'].onclick();check(x.calls.length===3,'Bundle, import and receipt');
+ check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Secret never sent to Django');
+ const call=x.calls.find(c=>c.kind==='wp');check(call.options.headers.Authorization==='Bearer '+good.key,'Automatic WordPress auth');check(call.options.credentials==='omit'&&call.options.redirect==='error','No cookies or redirects');check(x.nodes['wordpress-status'].textContent.includes('Installed on site.example'),'Success feedback');
+ for(const endpoint of ['http://site.example/wp-json/fontready/v1/fonts','https://evil.example/wp-json/fontready/v1/fonts','https://user:pass@site.example/wp-json/fontready/v1/fonts','https://site.example/elsewhere','https://site.example/wp-json/fontready/v1/fonts#secret']){x=setup({connection:{...good,endpoint}});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Unsafe endpoint rejected');}
+ x=setup({connection:{...good,endpoint:'https://site.example/?rest_route=/fontready/v1/fonts',status:'https://site.example/?rest_route=/fontready/v1/connection'}});await x.nodes['wordpress-publish'].onclick();check(x.calls.length===3,'Query REST supported');
+ x=setup({expired:true});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Expired kit blocked');x=setup({preview:true});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Preview blocked');x=setup({connection:null});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Connection required');
+ x=setup({code:401});await x.nodes['wordpress-publish'].onclick();check(!x.saved.has('fontready.website.v2'),'Revoked connection cleared');x=setup();x.nodes['wordpress-disconnect'].onclick();check(!x.saved.has('fontready.website.v2'),'Disconnect clears credential');
+ x=setup({connection:null,callback:{...good,state:'b'.repeat(64)}});await new Promise(resolve=>setImmediate(resolve));check(x.saved.has('fontready.website.v2'),'Callback confirmed and stored');check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Callback secret excluded from server');
+ const order=[];const callbackContext={location:{hash:'#fontready='+encodeURIComponent(JSON.stringify(good)),pathname:'/font-to-elementor-pro/',search:''},history:{replaceState(){order.push('stripped')}},window:{},JSON,decodeURIComponent};vm.runInNewContext(fs.readFileSync('static/wordpress-callback.js','utf8'),callbackContext);check(order[0]==='stripped'&&callbackContext.window.fontreadyCallback.key===good.key,'Fragment stripped synchronously');
+ console.log(`Passed ${checks} seamless publishing UI contract checks.`);
 })().catch(e=>{console.error(e);process.exit(1)});

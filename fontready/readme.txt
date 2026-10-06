@@ -1,39 +1,60 @@
 === FontReady ===
 Contributors: adealabiid
+Tags: fonts, typography, elementor, custom fonts
 Requires at least: 6.2
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.2.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Publish converted fonts from FontReady to WordPress without a FontReady account.
+Convert fonts with FontReady and install them on your Elementor Pro website without copying connection keys.
 
 == Description ==
-FontReady receives font files from your browser and stores them in your site's uploads/fontready directory. Families appear in Elementor's FontReady font group. Other themes can use the generated font-family via CSS. Fonts are managed in WordPress → FontReady; this plugin does not create entries in Elementor Pro's native Custom Fonts manager or the WordPress block editor Font Library.
+FontReady connects your WordPress website to the font conversion service at https://fontready.com. Installing and activating the plugin enables font installation. Connection requires your administrator account, HTTPS, an active Elementor Pro installation, and confirmation of your website domain.
+
+The dashboard has a connection view and a count of installed font families and variants, using FontReady's branding. Font files are hosted locally in uploads/fontready. They appear in Elementor's FontReady font group. This plugin does not create records in Elementor Pro's native Custom Fonts manager or the WordPress Font Library.
+
+FontReady is independent and is not affiliated with or endorsed by Elementor.
 
 == Installation ==
-1. Upload fontready-wordpress.zip in Plugins → Add New → Upload Plugin.
-2. Activate FontReady and open its dashboard menu.
-3. Generate a temporary connection key and copy the displayed JSON connection details.
-4. Convert your fonts at https://fontready.com. WOFF2 is preferred.
-5. Paste the connection details in Publish to WordPress, confirm font usage rights, and publish.
-6. Refresh the Elementor editor, then select your family under Typography → Font Family → FontReady.
+1. Upload fontready-wordpress.zip in Plugins → Add New → Upload Plugin and activate it.
+2. Open https://fontready.com/font-to-elementor-pro/.
+3. Enter your domain, confirm Elementor Pro, and continue to WordPress.
+4. Sign in as an administrator and confirm the website. You return to FontReady automatically.
+5. Convert your fonts and choose Install fonts.
+6. Refresh Elementor, then select your family under Typography → Font Family → FontReady.
 
-The website publishing feature must be deployed before step 5 is available.
+The companion website release must be deployed before the connection is available.
 
-== Privacy and service use ==
-No FontReady account is required. Conversion takes place at https://fontready.com under its temporary-file policy. Publishing sends the converted bytes directly from your browser to the HTTPS WordPress endpoint you select; the connection key is not sent to FontReady's server or saved in browser storage. Your WordPress site stores only a SHA-256 hash of the key, its owner and expiry. Keys expire after one hour and can be revoked. Fonts remain on WordPress after the original FontReady kit expires.
+== External service and privacy ==
+Font conversion requires the FontReady service. Read https://fontready.com/privacy/ for conversion storage, statistics, website analytics and connection details before using the service.
 
-The plugin itself makes no outbound requests to FontReady, provides no telemetry, and does not send fonts to Elementor's servers. Deactivating the plugin revokes the connection and stops font loading, but preserves files and the font registry for reactivation. Removal through the plugin deletes that family's files. Uninstalling keeps the files and registry so deletion does not break a later reinstall unexpectedly.
+The plugin makes no automatic outbound requests or telemetry on activation. On explicitly connecting, the browser shares your confirmed domain, installed font totals and successful installation reports with FontReady. Conversion dates, family names, variant counts and output formats are retained separately from expiring uploaded files for usage statistics.
 
-== Limits ==
-WOFF2, WOFF, TTF and OTF only. No SVG or ZIP extraction on WordPress. Up to 10 faces per import, 5 MB per face, 25 MB total and 100 stored variants. One preferred output per face is imported. Variable weight ranges are preserved in CSS. The same family/weight/style updates the existing variant; identical retries do not add duplicates. Conflicting faces in one batch are rejected.
+The authentication credential is handled automatically, stored in browser tab session storage, and sent directly to WordPress. FontReady's server never receives it. WordPress stores its SHA-256 hash, authorizing administrator and expiry. A connection lasts seven days and can be revoked in the dashboard. A new connection revokes the previous one. Connect again if you close the tab or the session expires.
 
-== Troubleshooting ==
-Use HTTPS in both WordPress URL settings. Security plugins and server rules must permit OPTIONS/POST to /wp-json/fontready/v1/fonts and forward Authorization. CORS permits only https://fontready.com. Default WordPress query-style REST endpoints are supported. PHP post_max_size, memory_limit and any proxy body limit must accommodate a base64 JSON import (up to about 36 MB). Try fewer fonts if the host's limits are lower.
+Fonts are sent directly from your browser to WordPress, never to Elementor's servers. Your fonts remain after the FontReady kit expires. Deactivation revokes access and stops font loading, while preserving installed files and registry for reactivation. Uninstalling keeps those files and registry to preserve your website assets; remove them manually only when they are no longer in use.
 
-If the browser cannot confirm the result, inspect the plugin's published fonts before retrying. Page caching may need clearing. Generate a new key after expiry or revocation. If a terminated PHP process leaves a change lock, deactivate and reactivate the plugin when no imports are running.
+== Frequently Asked Questions ==
+= Do I need a connection key or account? =
+No copying, generating or pasting keys is required. Use your existing WordPress administrator login. No FontReady account is needed.
+
+= Is Elementor Pro required? =
+Yes. Activate Elementor Pro before connecting. Families are registered in the FontReady group in its font selector.
+
+= Can I install any font? =
+Only install fonts you have permission to use on your website. WOFF2 is preferred. WOFF, TTF and OTF are also supported. SVG is not imported.
+
+== Limits and troubleshooting ==
+Up to 10 faces per import, 5 MB per face, 25 MB total and 100 stored variants. One preferred output per face is installed. Variable weight ranges are preserved. Identical retries do not duplicate files. Matching family, weight and style replaces the existing variant.
+
+HTTPS, REST API access and forwarding of the Authorization header are required. Server rules must allow OPTIONS, GET and POST to the FontReady REST routes. CORS allows only https://fontready.com. Both pretty and query-style WordPress REST routes work. PHP post_max_size, memory_limit and proxy limits must accommodate a base64 JSON payload of up to about 36 MB.
+
+If an installation response is lost, check the installed count before retrying. Clear page caches and refresh Elementor after installing. If a terminated PHP process leaves a write lock, deactivate and reactivate the plugin when no imports are running.
 
 == Changelog ==
+= 0.2.0 =
+Seamless administrator redirect connection, Elementor Pro confirmation, redesigned branded dashboard, local font hosting and consent-based connection statistics.
+
 = 0.1.0 =
-Initial preview release: temporary connections, validated imports, local font hosting, family management and Elementor font selector registration.
+Initial preview release.
