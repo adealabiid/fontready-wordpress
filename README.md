@@ -1,12 +1,22 @@
-# FontReady for WordPress
+# FontReady for Elementor Pro
 
-Version 0.2.0 connects an Elementor Pro website through a WordPress administrator redirect. Users confirm their domain and Elementor Pro, then return to FontReady without copying credentials. The branded dashboard shows the connection and installed font count.
+Version 0.3.0 publishes families into Elementor Pro’s native Custom Fonts manager, with font variants registered as WordPress media attachments. The FontReady dashboard shows connection status and installed font counts.
 
-Install `fontready-wordpress.zip`, activate Elementor Pro and FontReady, and open https://fontready.com/font-to-elementor-pro/. Convert fonts after connecting and choose Install fonts. Refresh Elementor to select the family in the FontReady group. The companion website changes must be deployed first.
+## User flow
 
-Authentication uses a nonce-protected administrator confirmation, a one-time website session state, a fixed service callback and a seven-day opaque credential. Only its hash is stored in WordPress. The browser strips the callback fragment before analytics loads and stores the credential in tab session storage; it is never sent to Django. Reconnecting revokes previous access. Disconnecting in WordPress revokes all access.
+1. Convert on `/font-to-elementor-pro/`, or open a ready kit there from the main converter.
+2. Choose Publish to Elementor Pro website and enter the URL.
+3. Install and activate Elementor Pro and FontReady; confirm both.
+4. Approve publishing as a WordPress administrator. The selected batch returns with the browser and publishing resumes.
+5. Open Elementor → Custom Fonts. Refresh the editor to select the family.
 
-Font files are validated and saved locally, with transactional registry replacement, bounded payloads, serialized writes and duplicate-safe retries. No FontReady account is required. Elementor Pro is required; native Custom Fonts records are not created. See `fontready/readme.txt` for privacy, limits and lifecycle details.
+No FontReady account or manual connection keys. The nonce-protected WordPress approval remains necessary to authorize installation. Opaque credentials stay in tab session storage and are never sent to FontReady’s server. Selected kits are session-owned and expire after 24 minutes. The new plugin is required for native publishing; the website rejects the older group-only connector.
+
+## Native adapter
+
+`includes/elementor.php` obtains the installed Elementor assets manager and its custom-font type. It calls that object’s `save_meta` method to generate native metadata and CSS rather than copying Elementor implementation code. WordPress APIs create font posts, media records and taxonomy terms. It refuses to overwrite fonts created outside FontReady, registers retries without duplicate families, restores prior metadata after a failed registry write, and invalidates font-manager option caches. Existing draft or trashed families require a decision in Elementor first.
+
+The adapter relies on Elementor’s internal PHP interface. Compatibility with a live Elementor Pro installation is **unverified**. Current tests use an isolated manager double; they do not establish support for particular Elementor versions or native variable-font editing. Live testing is a release gate. WOFF2, WOFF and TTF are accepted natively; the website wraps OTF-only kits into WOFF2. SVG is excluded. Resource limits apply per request; there is no total stored-font quota.
 
 ## Validation
 
@@ -16,12 +26,4 @@ python scripts/check.py
 python scripts/build.py
 ```
 
-The PHP contracts use real TTF, OTF, WOFF and WOFF2 fixtures with stubbed WordPress APIs. They are not live WordPress/Elementor compatibility tests. `integration/fontready.patch` contains the companion changes; the website repository is authoritative for the integration and analytics dashboard.
-
-## Before WordPress.org submission
-
-Run a live WordPress/Elementor Pro acceptance test: login redirect, confirmation, import, selector, preview, front-end rendering, caching, disconnect, expiry, subdirectory install and query-style REST routes. Run WordPress Plugin Check and review accessibility and translations. Record the tested WordPress and Elementor versions after those checks; none are claimed here. Submission and deployment are separate steps.
-
-The plugin is GPL-2.0-or-later, includes its source and loads its own dashboard stylesheet locally. The service disclosure and explicit connection consent are in the plugin UI and readme. No telemetry runs on activation. No Elementor logo is included: its published rules require written permission.
-
-Author: Ademola Alabi.
+See [the submission plan](docs/WORDPRESS_ORG_SUBMISSION.md). Do not claim a Tested up to version until it has been tested. The website repository is authoritative for the companion flow; `integration/fontready.patch` is a review reference. GPL-2.0-or-later. Author: Ademola Alabi.

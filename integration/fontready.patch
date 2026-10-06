@@ -1,1229 +1,579 @@
-diff --git a/.github/workflows/checks.yml b/.github/workflows/checks.yml
-index 58917ab..af76a65 100644
---- a/.github/workflows/checks.yml
-+++ b/.github/workflows/checks.yml
-@@ -1,17 +1,18 @@
- name: FontReady checks
- on: [push, pull_request]
- jobs:
--  django:
-+  application:
-     runs-on: ubuntu-latest
-     steps:
-       - uses: actions/checkout@v4
-       - uses: actions/setup-python@v5
-         with:
-           python-version: '3.12'
--          cache: pip
-       - run: pip install -r requirements.txt
-       - run: python manage.py check
--      - run: python manage.py test
--      - run: python scripts/export_preview.py
--      - run: git diff --exit-code -- preview/
--
-+      - run: python manage.py makemigrations --check --dry-run
-+      - run: python manage.py test converter
-+      - run: node scripts/check_wordpress_ui.cjs
-+      - run: python scripts/check_wordpress.py
-+      - run: python scripts/build_wordpress.py
-+      - run: git diff --exit-code -- wordpress/fontready-wordpress.zip
 diff --git a/README.md b/README.md
-index 22977e6..55b6458 100644
+index 55b6458..cd3adc7 100644
 --- a/README.md
 +++ b/README.md
-@@ -170,3 +170,13 @@ python scripts/export_preview.py
+@@ -173,10 +173,14 @@ After launch, submit `/sitemap.xml` in Google Search Console and Bing Webmaster
  
- After launch, submit `/sitemap.xml` in Google Search Console and Bing Webmaster Tools, inspect each language URL, and verify that production allows crawling while staging does not. These account actions remain owner-run.
+ ## Elementor Pro connection and private statistics (0.2.0)
  
-+
-+## Elementor Pro connection and private statistics (0.2.0)
-+
-+`/font-to-elementor-pro/` connects WordPress through an administrator redirect and one-time session state. Opaque credentials stay in browser tab session storage and are sent only to WordPress. The plugin requires HTTPS and active Elementor Pro, and registers installed fonts in the FontReady font group rather than the native Custom Fonts manager. The plugin source and ZIP are in `wordpress/`. Deploy both releases together.
-+
-+Run `python manage.py migrate` before starting web and worker processes. Create an owner account with `python manage.py createsuperuser` using a private password, then sign in at `/owner/`. Only superusers can view the dashboard; it is noindex and contains no external analytics. No default owner credentials exist. Successful conversions are deduplicated in durable tables, surviving file expiry. Daily totals use Africa/Lagos time, and top font families can be compared over 7, 30 and 365 days. Connections and installs are explicitly browser-reported, not independently audited server receipts. Statistics start with this release; no historical data is fabricated.
-+
-+The migration adds `ConversionMetric`, `SiteConnection` and `PublishMetric`. Only dates, family names, counts, formats, domain names and internal deduplication IDs are retained. `/privacy/` explains retention and connection consent. To fulfill a domain deletion request, delete its SiteConnection row (related PublishMetric rows cascade). Historical aggregate conversion statistics are independent of domains.
-+
-+Before release, run live WordPress/Elementor Pro tests and WordPress Plugin Check as documented in the plugin repository. This code has not been submitted to WordPress.org.
-diff --git a/config/settings.py b/config/settings.py
-index ca65a54..9c43874 100644
---- a/config/settings.py
-+++ b/config/settings.py
-@@ -29,8 +29,8 @@ if os.getenv('VERCEL'):
-         if host and re.fullmatch(r'[A-Za-z0-9.-]+',host):
-             ALLOWED_HOSTS.append(host)
-             CSRF_TRUSTED_ORIGINS.append('https://'+host)
--INSTALLED_APPS = ['django.contrib.contenttypes', 'django.contrib.sessions', 'django.contrib.staticfiles', 'converter']
--MIDDLEWARE = ['converter.seo.IndexingMiddleware', 'django.middleware.security.SecurityMiddleware', 'whitenoise.middleware.WhiteNoiseMiddleware', 'django.contrib.sessions.middleware.SessionMiddleware', 'django.middleware.common.CommonMiddleware', 'django.middleware.csrf.CsrfViewMiddleware', 'django.middleware.clickjacking.XFrameOptionsMiddleware']
-+INSTALLED_APPS = ['django.contrib.auth', 'django.contrib.contenttypes', 'django.contrib.sessions', 'django.contrib.staticfiles', 'converter.apps.ConverterConfig']
-+MIDDLEWARE = ['converter.seo.IndexingMiddleware', 'django.middleware.security.SecurityMiddleware', 'whitenoise.middleware.WhiteNoiseMiddleware', 'django.contrib.sessions.middleware.SessionMiddleware', 'django.contrib.auth.middleware.AuthenticationMiddleware', 'django.middleware.common.CommonMiddleware', 'django.middleware.csrf.CsrfViewMiddleware', 'django.middleware.clickjacking.XFrameOptionsMiddleware']
- ROOT_URLCONF = 'config.urls'
- TEMPLATES = [{'BACKEND': 'django.template.backends.django.DjangoTemplates', 'DIRS': [BASE_DIR / 'templates'], 'APP_DIRS': True, 'OPTIONS': {'context_processors': ['django.template.context_processors.request']}}]
- WSGI_APPLICATION = 'config.wsgi.application'
-diff --git a/config/urls.py b/config/urls.py
-index 03f1ec2..705186b 100644
---- a/config/urls.py
-+++ b/config/urls.py
-@@ -1,7 +1,16 @@
- from django.urls import path
--from converter import views, cloud_views, seo
-+from converter import views, cloud_views, seo, wordpress, metrics
-+from django.contrib.auth import views as auth_views
+-`/font-to-elementor-pro/` connects WordPress through an administrator redirect and one-time session state. Opaque credentials stay in browser tab session storage and are sent only to WordPress. The plugin requires HTTPS and active Elementor Pro, and registers installed fonts in the FontReady font group rather than the native Custom Fonts manager. The plugin source and ZIP are in `wordpress/`. Deploy both releases together.
++`/font-to-elementor-pro/` connects WordPress through an administrator redirect and one-time session state. Opaque credentials stay in browser tab session storage and are sent only to WordPress. The plugin requires HTTPS and active Elementor Pro, and publishes installed fonts into Elementor Pro’s native Custom Fonts manager. The plugin source and ZIP are in `wordpress/`. Deploy both releases together.
  
- urlpatterns = [
-+    path('font-to-elementor-pro/', wordpress.elementor_page),
-+    path('privacy/', wordpress.privacy),
-+    path('api/wordpress/connect/', wordpress.start_connection),
-+    path('api/wordpress/complete/', wordpress.complete_connection),
-+    path('api/conversions/<uuid:token>/published/', wordpress.report_publish),
-+    path('owner/', metrics.dashboard),
-+    path('owner/login/', auth_views.LoginView.as_view(template_name='owner/login.html', next_page='/owner/')),
-+    path('owner/logout/', auth_views.LogoutView.as_view(next_page='/owner/login/')),
-     path('', views.home, name='home'),
-     *[path(f'{language}/', views.home, {'language':language}, name=f'home-{language}') for language in seo.LANGUAGES if language != 'en'],
-     path('robots.txt', seo.robots),
-@@ -15,5 +24,6 @@ urlpatterns = [
-     path('api/uploads/<uuid:token>/complete/', cloud_views.complete_upload),
-     path('api/maintenance/', cloud_views.maintenance),
-     path('health/', views.health),
-+    path('api/conversions/<uuid:token>/wordpress/', wordpress.bundle),
-+    path('wordpress-plugin/', wordpress.plugin_download),
- ]
--
-diff --git a/converter/apps.py b/converter/apps.py
-new file mode 100644
-index 0000000..ef732cf
---- /dev/null
-+++ b/converter/apps.py
-@@ -0,0 +1,7 @@
-+from django.apps import AppConfig
-+
-+class ConverterConfig(AppConfig):
-+    default_auto_field = 'django.db.models.BigAutoField'
-+    name = 'converter'
-+    def ready(self):
-+        from . import metrics  # register deduplicated conversion accounting
-diff --git a/converter/cloud_jobs.py b/converter/cloud_jobs.py
-index 017638d..75aebbc 100644
---- a/converter/cloud_jobs.py
-+++ b/converter/cloud_jobs.py
-@@ -31,6 +31,8 @@ def convert_job(token):
-     job=Conversion.objects.filter(token=token).first()
-     if not job:return
-     if job.state=='ready':
-+        from .metrics import record_conversion
-+        record_conversion(job)
-         if job.expired:expire_job(job.token)
-         else:queue_followups(job)
-         return
-@@ -73,7 +75,10 @@ def convert_job(token):
-         # needed by a retry. Input deletion has its own retry path.
-         try:storage.delete_prefix(prefix+'/input')
-         except Exception:logger.warning('Original cleanup deferred for %s',token)
--        job.refresh_from_db();queue_followups(job)
-+        job.refresh_from_db()
-+        from .metrics import record_conversion
-+        record_conversion(job)
-+        queue_followups(job)
-     except Exception:
-         logger.exception('Cloud processing temporarily failed for %s',token)
-         # Preserve inputs for queue retries; never serve partially uploaded outputs.
-diff --git a/converter/metrics.py b/converter/metrics.py
-new file mode 100644
-index 0000000..5b9d24b
---- /dev/null
-+++ b/converter/metrics.py
-@@ -0,0 +1,48 @@
-+"""Aggregate conversion counts are independent of expiring source jobs."""
-+from collections import Counter
-+from datetime import timedelta, datetime, time
-+from zoneinfo import ZoneInfo
-+from django.contrib.auth.decorators import login_required
-+from django.core.exceptions import PermissionDenied
-+from django.db.models import Count
-+from django.db.models.functions import TruncDate
-+from django.db.models.signals import post_save
-+from django.dispatch import receiver
-+from django.shortcuts import render
-+from django.utils import timezone
-+from django.views.decorators.cache import never_cache
-+from .models import Conversion, ConversionMetric, SiteConnection, PublishMetric
-+
-+
-+def record_conversion(job):
-+    if job.state != 'ready' or not job.results:
-+        return
-+    ConversionMetric.objects.get_or_create(token=job.token, defaults={
-+        'created_at': job.created_at, 'fonts': [f['family'][:100] for f in job.results if isinstance(f.get('family'), str)],
-+        'face_count': len(job.results), 'formats': sorted({fmt for f in job.results for fmt in f.get('sizes', {})})})
-+
-+
-+@receiver(post_save, sender=Conversion)
-+def converted(sender, instance, **kwargs):
-+    record_conversion(instance)
-+
-+
-+@never_cache
-+@login_required(login_url='/owner/login/')
-+def dashboard(request):
-+    if not request.user.is_superuser:
-+        raise PermissionDenied
-+    now = timezone.now()
-+    period = request.GET.get('period', 'week')
-+    days = {'week': 7, 'month': 30, 'year': 365}.get(period, 7)
-+    period = period if period in ('week', 'month', 'year') else 'week'
-+    today = now.astimezone(ZoneInfo('Africa/Lagos')).date()
-+    start = datetime.combine(today-timedelta(days=days-1), time.min, tzinfo=ZoneInfo('Africa/Lagos'))
-+    records = ConversionMetric.objects.filter(created_at__gte=start)
-+    top = Counter(family for fonts in records.values_list('fonts', flat=True) for family in fonts)
-+    counts = {row['day']:row['total'] for row in records.annotate(day=TruncDate('created_at', tzinfo=ZoneInfo('Africa/Lagos'))).values('day').annotate(total=Count('id'))}
-+    daily = [{'day':today-timedelta(days=i), 'total':counts.get(today-timedelta(days=i),0)} for i in range(days)]
-+    return render(request, 'owner/dashboard.html', {'period':period, 'days':days, 'daily':daily,
-+        'top':top.most_common(20), 'total':records.count(), 'faces':sum(records.values_list('face_count',flat=True)),
-+        'sites':SiteConnection.objects.order_by('-last_seen')[:100], 'site_count':SiteConnection.objects.count(),
-+        'publishes':PublishMetric.objects.filter(created_at__gte=start).count()})
-diff --git a/converter/migrations/0006_conversionmetric_siteconnection_publishmetric.py b/converter/migrations/0006_conversionmetric_siteconnection_publishmetric.py
-new file mode 100644
-index 0000000..42a833c
---- /dev/null
-+++ b/converter/migrations/0006_conversionmetric_siteconnection_publishmetric.py
-@@ -0,0 +1,51 @@
-+# Generated by Django 5.2.17 on 2026-10-06 09:31
-+
-+import django.db.models.deletion
-+import django.utils.timezone
-+from django.db import migrations, models
-+
-+
-+class Migration(migrations.Migration):
-+
-+    dependencies = [
-+        ('converter', '0005_conversion_blob_assets_conversion_dispatched_at_and_more'),
-+    ]
-+
-+    operations = [
-+        migrations.CreateModel(
-+            name='ConversionMetric',
-+            fields=[
-+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-+                ('token', models.UUIDField(unique=True)),
-+                ('created_at', models.DateTimeField(db_index=True)),
-+                ('completed_at', models.DateTimeField(default=django.utils.timezone.now)),
-+                ('fonts', models.JSONField(default=list)),
-+                ('face_count', models.PositiveIntegerField(default=0)),
-+                ('formats', models.JSONField(default=list)),
-+            ],
-+        ),
-+        migrations.CreateModel(
-+            name='SiteConnection',
-+            fields=[
-+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-+                ('site', models.URLField(max_length=500, unique=True)),
-+                ('first_seen', models.DateTimeField(default=django.utils.timezone.now)),
-+                ('last_seen', models.DateTimeField(default=django.utils.timezone.now)),
-+                ('families', models.PositiveIntegerField(default=0)),
-+                ('variants', models.PositiveIntegerField(default=0)),
-+            ],
-+        ),
-+        migrations.CreateModel(
-+            name='PublishMetric',
-+            fields=[
-+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-+                ('conversion', models.UUIDField()),
-+                ('created_at', models.DateTimeField(default=django.utils.timezone.now)),
-+                ('face_count', models.PositiveIntegerField(default=0)),
-+                ('site', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='converter.siteconnection')),
-+            ],
-+            options={
-+                'constraints': [models.UniqueConstraint(fields=('conversion', 'site'), name='unique_conversion_site_publish')],
-+            },
-+        ),
-+    ]
-diff --git a/converter/models.py b/converter/models.py
-index 7d4ba6e..ae97961 100644
---- a/converter/models.py
-+++ b/converter/models.py
-@@ -43,3 +43,31 @@ class WorkerLease(models.Model):
-     name = models.CharField(max_length=40, primary_key=True)
-     valid_until = models.DateTimeField()
+ Run `python manage.py migrate` before starting web and worker processes. Create an owner account with `python manage.py createsuperuser` using a private password, then sign in at `/owner/`. Only superusers can view the dashboard; it is noindex and contains no external analytics. No default owner credentials exist. Successful conversions are deduplicated in durable tables, surviving file expiry. Daily totals use Africa/Lagos time, and top font families can be compared over 7, 30 and 365 days. Connections and installs are explicitly browser-reported, not independently audited server receipts. Statistics start with this release; no historical data is fabricated.
  
+ The migration adds `ConversionMetric`, `SiteConnection` and `PublishMetric`. Only dates, family names, counts, formats, domain names and internal deduplication IDs are retained. `/privacy/` explains retention and connection consent. To fulfill a domain deletion request, delete its SiteConnection row (related PublishMetric rows cascade). Historical aggregate conversion statistics are independent of domains.
+ 
+ Before release, run live WordPress/Elementor Pro tests and WordPress Plugin Check as documented in the plugin repository. This code has not been submitted to WordPress.org.
 +
++## Elementor publishing flow (0.3.0)
 +
-+class ConversionMetric(models.Model):
-+    """Durable, deduplicated counts; no uploaded files or visitor identifiers."""
-+    token = models.UUIDField(unique=True)
-+    created_at = models.DateTimeField(db_index=True)
-+    completed_at = models.DateTimeField(default=timezone.now)
-+    fonts = models.JSONField(default=list)
-+    face_count = models.PositiveIntegerField(default=0)
-+    formats = models.JSONField(default=list)
-+
-+
-+class SiteConnection(models.Model):
-+    site = models.URLField(max_length=500, unique=True)
-+    first_seen = models.DateTimeField(default=timezone.now)
-+    last_seen = models.DateTimeField(default=timezone.now)
-+    families = models.PositiveIntegerField(default=0)
-+    variants = models.PositiveIntegerField(default=0)
-+
-+
-+class PublishMetric(models.Model):
-+    conversion = models.UUIDField()
-+    site = models.ForeignKey(SiteConnection, on_delete=models.CASCADE)
-+    created_at = models.DateTimeField(default=timezone.now)
-+    face_count = models.PositiveIntegerField(default=0)
-+
-+    class Meta:
-+        constraints = [models.UniqueConstraint(fields=['conversion', 'site'], name='unique_conversion_site_publish')]
++The Elementor page is conversion-first. A ready batch can be opened there from the main converter using its session-owned kit ID. The URL and Elementor Pro/FontReady confirmations sit beside the selected results. WordPress administrator approval carries the kit ID back to the page and resumes publishing. Expired kits show a conversion-again message. Native publishing requires plugin 0.3.0; old connectors are rejected. OTF-only kits are wrapped as WOFF2 for the native adapter. See the plugin repository’s WordPress.org submission plan for outstanding live-test gates.
 diff --git a/converter/seo.py b/converter/seo.py
-index aac4aab..1db11e8 100644
+index 1db11e8..86dc925 100644
 --- a/converter/seo.py
 +++ b/converter/seo.py
 @@ -56,7 +56,7 @@ def page_context(request, language='en'):
          {'@type':'WebSite', '@id':origin+'/#website', 'url':origin+'/', 'name':'FontReady', 'inLanguage':list(LANGUAGES)},
          {'@type':'SoftwareApplication', '@id':origin+'/#converter', 'name':'FontReady', 'url':origin+'/',
           'applicationCategory':'DeveloperApplication', 'operatingSystem':'Web browser', 'creator':{'@id':origin+'/#developer'},
--         'featureList':['TTF, OTF, WOFF and WOFF2 uploads','WOFF2, WOFF, TTF, OTF and legacy SVG outputs','Individual files and CSS kit','24-minute download window']},
-+         'featureList':['TTF, OTF, WOFF and WOFF2 uploads','WOFF2, WOFF, TTF, OTF and legacy SVG outputs','Individual files and CSS kit','24-minute download window','Font publishing for Elementor Pro through a WordPress administrator redirect']},
+-         'featureList':['TTF, OTF, WOFF and WOFF2 uploads','WOFF2, WOFF, TTF, OTF and legacy SVG outputs','Individual files and CSS kit','24-minute download window','Font publishing for Elementor Pro through a WordPress administrator redirect']},
++         'featureList':['TTF, OTF, WOFF and WOFF2 uploads','WOFF2, WOFF, TTF, OTF and legacy SVG outputs','Individual files and CSS kit','24-minute download window','Publishing converted fonts into Elementor Pro Custom Fonts through a WordPress administrator approval']},
          {'@type':'WebPage', '@id':canonical+'#page', 'url':canonical, 'name':text['title'], 'description':text['description'],
           'inLanguage':language, 'isPartOf':{'@id':origin+'/#website'}, 'about':{'@id':origin+'/#converter'}, 'author':{'@id':origin+'/#developer'}},
          {'@type':'FAQPage', '@id':canonical+'#questions', 'inLanguage':language,
-@@ -70,7 +70,7 @@ def page_context(request, language='en'):
- def robots(request):
-     lines = ['User-agent: *']
-     if can_index(request):
--        lines += ['Allow: /','Disallow: /api/','Disallow: /downloads/','Disallow: /font-info/','Disallow: /health/', 'Sitemap: '+settings.PUBLIC_SITE_URL.rstrip('/')+'/sitemap.xml']
-+        lines += ['Allow: /','Disallow: /api/','Disallow: /downloads/','Disallow: /font-info/','Disallow: /health/','Disallow: /owner/', 'Sitemap: '+settings.PUBLIC_SITE_URL.rstrip('/')+'/sitemap.xml']
-     else:
-         lines += ['Disallow: /']
-     return HttpResponse('\n'.join(lines)+'\n',content_type='text/plain; charset=utf-8')
-@@ -81,6 +81,8 @@ def sitemap(request):
-     for language in LANGUAGES:
-         item = SubElement(root,'url')
-         SubElement(item,'loc').text=settings.PUBLIC_SITE_URL.rstrip('/')+language_path(language)
-+    item = SubElement(root,'url')
-+    SubElement(item,'loc').text=settings.PUBLIC_SITE_URL.rstrip('/')+'/font-to-elementor-pro/'
-     return HttpResponse(tostring(root,encoding='utf-8',xml_declaration=True),content_type='application/xml')
- 
- 
-@@ -90,7 +92,7 @@ class IndexingMiddleware:
- 
-     def __call__(self,request):
-         response=self.get_response(request)
--        private=request.path.startswith(('/api/','/downloads/','/font-info/','/health/'))
-+        private=request.path.startswith(('/api/','/downloads/','/font-info/','/health/','/owner/'))
-         if private or not can_index(request):
-             response['X-Robots-Tag']='noindex, nofollow, nosnippet'
-         return response
 diff --git a/converter/seo_content.json b/converter/seo_content.json
-index bf055f9..b8d4721 100644
+index b8d4721..0d3e2c3 100644
 --- a/converter/seo_content.json
 +++ b/converter/seo_content.json
-@@ -1,8 +1,8 @@
- {
-   "en": {
-     "name": "English",
--    "title": "FontReady — Font Converter to WOFF2, WOFF, TTF, OTF & SVG",
--    "description": "Convert TTF, OTF, WOFF and WOFF2 fonts. Preview typography, download individual files or a webfont kit with CSS, and use your download links for 24 minutes.",
-+    "title": "FontReady — Font Converter & Fonts for Elementor Pro",
-+    "description": "Convert TTF, OTF, WOFF and WOFF2 fonts, download a CSS kit, or install fonts on your Elementor Pro website with a seamless WordPress connection.",
-     "heading": "A font converter built for your next website.",
-     "intro": "FontReady converts TTF, OTF, WOFF and WOFF2 uploads into webfonts and a ready-to-use CSS kit. Preview your type, choose your formats, then download individual fonts or the complete ZIP. No FontReady account is required.",
-     "formats_heading": "Which font format should you use?",
-@@ -64,6 +64,14 @@
+@@ -47,7 +47,7 @@
+       ],
        [
-         "Do I need an account?",
-         "No FontReady account is required. Recent conversions belong to the current browser session; download links can be shared while they remain valid."
-+      ],
-+      [
-+        "How do I install fonts in Elementor Pro?",
-+        "Install and activate FontReady on your WordPress website. Open Font to Elementor Pro, confirm Elementor Pro and your domain, then connect through WordPress. Convert your fonts and choose Install fonts. Refresh Elementor and find your family in the FontReady group."
-+      ],
-+      [
-+        "Do I need a connection key or FontReady account?",
-+        "No. Connect through your WordPress administrator account without copying a key. Authentication is handled automatically in your browser tab. HTTPS and an active Elementor Pro installation are required."
-       ]
-     ],
-     "credit": "Developed from Lagos, NG with love",
-@@ -71,8 +79,8 @@
-   },
-   "es": {
-     "name": "Español",
--    "title": "FontReady — Convertidor de fuentes WOFF2, WOFF, TTF, OTF y SVG",
--    "description": "Convierte fuentes TTF, OTF, WOFF y WOFF2. Previsualiza, descarga archivos individuales o un kit con CSS y usa los enlaces durante 24 minutos.",
-+    "title": "FontReady — Convertidor de fuentes y Elementor Pro",
-+    "description": "Convierte TTF, OTF, WOFF y WOFF2, descarga un kit CSS o instala fuentes en Elementor Pro con una conexión sencilla a WordPress.",
-     "heading": "Un convertidor de fuentes para tu próxima web.",
-     "intro": "FontReady convierte archivos TTF, OTF, WOFF y WOFF2 en fuentes web y un kit con CSS. Previsualiza, elige los formatos y descarga las fuentes o el ZIP completo. No necesitas una cuenta de FontReady.",
-     "formats_heading": "¿Qué formato de fuente deberías usar?",
-@@ -134,6 +142,14 @@
+         "Can I use the fonts in WordPress or Elementor?",
+-        "Yes, if your font licence allows web use. Upload matching files and weights through a custom-font feature supported by your WordPress or Elementor installation, or use the generated @font-face CSS."
++        "Yes, if your font licence allows web use. FontReady publishes converted fonts into Elementor Pro’s native Custom Fonts manager using its WordPress plugin. You can also download the generated files and @font-face CSS for other websites."
+       ],
        [
-         "¿Necesito una cuenta?",
-         "No necesitas una cuenta de FontReady. Las conversiones recientes pertenecen a la sesión del navegador; los enlaces pueden compartirse mientras estén vigentes."
-+      ],
-+      [
-+        "¿Cómo instalo fuentes en Elementor Pro?",
-+        "Instala y activa FontReady en WordPress. Abre Font to Elementor Pro, confirma Elementor Pro y tu dominio y conecta desde WordPress. Convierte las fuentes y pulsa Install fonts. Actualiza Elementor y busca la familia en el grupo FontReady."
-+      ],
-+      [
-+        "¿Necesito una clave o cuenta de FontReady?",
-+        "No. Conecta desde tu cuenta de administrador de WordPress sin copiar claves. La autenticación se gestiona en la pestaña del navegador. Se requieren HTTPS y Elementor Pro activo."
-       ]
-     ],
-     "credit": "Desarrollado desde Lagos, NG con cariño",
-@@ -141,8 +157,8 @@
-   },
-   "ru": {
-     "name": "Русский",
--    "title": "FontReady — Конвертер шрифтов WOFF2, WOFF, TTF, OTF и SVG",
--    "description": "Конвертируйте TTF, OTF, WOFF и WOFF2. Просматривайте шрифты, скачивайте файлы или комплект с CSS. Ссылки доступны 24 минуты.",
-+    "title": "FontReady — Конвертер шрифтов и Elementor Pro",
-+    "description": "Конвертируйте TTF, OTF, WOFF и WOFF2, скачивайте CSS или устанавливайте шрифты в Elementor Pro через подключение WordPress.",
-     "heading": "Конвертер шрифтов для вашего следующего сайта.",
-     "intro": "FontReady превращает TTF, OTF, WOFF и WOFF2 в веб-шрифты и комплект с CSS. Просмотрите шрифт, выберите форматы и скачайте отдельные файлы или ZIP. Аккаунт FontReady не нужен.",
-     "formats_heading": "Какой формат шрифта выбрать?",
-@@ -204,6 +220,14 @@
+         "How many fonts can I convert at once?",
+@@ -67,7 +67,7 @@
+       ],
        [
-         "Нужен ли аккаунт?",
-         "Аккаунт FontReady не требуется. История относится к текущей сессии браузера; действующие ссылки можно передавать другим."
-+      ],
-+      [
-+        "Как установить шрифты в Elementor Pro?",
-+        "Установите и активируйте FontReady в WordPress. Откройте Font to Elementor Pro, подтвердите Elementor Pro и домен, затем подключитесь через WordPress. Конвертируйте шрифты и нажмите Install fonts. Обновите Elementor и выберите семейство в группе FontReady."
-+      ],
-+      [
-+        "Нужны ли ключ подключения или аккаунт FontReady?",
-+        "Нет. Подключитесь через аккаунт администратора WordPress без копирования ключа. Авторизация выполняется автоматически во вкладке браузера. Требуются HTTPS и активный Elementor Pro."
-       ]
-     ],
-     "credit": "Разработано с любовью в Лагосе, NG",
-@@ -211,8 +235,8 @@
-   },
-   "fr": {
-     "name": "Français",
--    "title": "FontReady — Convertisseur de polices WOFF2, WOFF, TTF, OTF et SVG",
--    "description": "Convertissez TTF, OTF, WOFF et WOFF2. Prévisualisez et téléchargez les fichiers ou un kit avec CSS. Liens disponibles pendant 24 minutes.",
-+    "title": "FontReady — Convertisseur de polices et Elementor Pro",
-+    "description": "Convertissez TTF, OTF, WOFF et WOFF2, téléchargez un kit CSS ou installez des polices dans Elementor Pro via une connexion WordPress simple.",
-     "heading": "Un convertisseur de polices pour votre prochain site.",
-     "intro": "FontReady transforme TTF, OTF, WOFF et WOFF2 en polices web et en kit CSS. Prévisualisez, choisissez les formats et téléchargez les fichiers ou le ZIP complet. Aucun compte FontReady n’est nécessaire.",
-     "formats_heading": "Quel format de police choisir ?",
-@@ -274,6 +298,14 @@
+         "How do I install fonts in Elementor Pro?",
+-        "Install and activate FontReady on your WordPress website. Open Font to Elementor Pro, confirm Elementor Pro and your domain, then connect through WordPress. Convert your fonts and choose Install fonts. Refresh Elementor and find your family in the FontReady group."
++        "Convert your fonts on the Font to Elementor Pro page, or open a ready kit there from the main converter. Choose Publish to Elementor Pro website, enter your URL and confirm Elementor Pro and FontReady are installed and active. Approve publishing in WordPress. Your selected fonts return with you and are published into Elementor Custom Fonts."
+       ],
        [
-         "Faut-il un compte ?",
-         "Aucun compte FontReady n’est requis. L’historique appartient à la session du navigateur ; les liens peuvent être partagés tant qu’ils sont valides."
-+      ],
-+      [
-+        "Comment installer des polices dans Elementor Pro ?",
-+        "Installez et activez FontReady dans WordPress. Ouvrez Font to Elementor Pro, confirmez Elementor Pro et votre domaine, puis connectez-vous via WordPress. Convertissez vos polices et cliquez sur Install fonts. Actualisez Elementor et choisissez la famille dans le groupe FontReady."
-+      ],
-+      [
-+        "Faut-il une clé de connexion ou un compte FontReady ?",
-+        "Non. Connectez-vous avec votre compte administrateur WordPress sans copier de clé. L’authentification est automatique dans votre onglet. HTTPS et Elementor Pro actif sont nécessaires."
-       ]
-     ],
-     "credit": "Développé avec amour depuis Lagos, NG",
-@@ -281,8 +313,8 @@
-   },
-   "de": {
-     "name": "Deutsch",
--    "title": "FontReady — Schriftkonverter für WOFF2, WOFF, TTF, OTF & SVG",
--    "description": "Konvertiere TTF, OTF, WOFF und WOFF2. Vorschau ansehen, einzelne Dateien oder ein CSS-Paket herunterladen. Links sind 24 Minuten verfügbar.",
-+    "title": "FontReady — Schriftkonverter & Schriften für Elementor Pro",
-+    "description": "Konvertiere TTF, OTF, WOFF und WOFF2, lade ein CSS-Paket herunter oder installiere Schriften in Elementor Pro über eine einfache WordPress-Verbindung.",
-     "heading": "Ein Schriftkonverter für deine nächste Website.",
-     "intro": "FontReady wandelt TTF, OTF, WOFF und WOFF2 in Webfonts und ein CSS-Paket um. Vorschau ansehen, Formate wählen und Dateien oder das ZIP herunterladen. Ein FontReady-Konto ist nicht nötig.",
-     "formats_heading": "Welches Schriftformat solltest du verwenden?",
-@@ -344,6 +376,14 @@
+         "Do I need a connection key or FontReady account?",
+@@ -145,7 +145,7 @@
+       ],
        [
-         "Brauche ich ein Konto?",
-         "Ein FontReady-Konto ist nicht nötig. Der Verlauf gehört zur aktuellen Browsersitzung; gültige Links lassen sich teilen."
-+      ],
-+      [
-+        "Wie installiere ich Schriften in Elementor Pro?",
-+        "Installiere und aktiviere FontReady in WordPress. Öffne Font to Elementor Pro, bestätige Elementor Pro und deine Domain und verbinde dich über WordPress. Konvertiere die Schriften und klicke auf Install fonts. Aktualisiere Elementor und wähle die Familie in der Gruppe FontReady."
-+      ],
-+      [
-+        "Brauche ich einen Verbindungsschlüssel oder ein FontReady-Konto?",
-+        "Nein. Verbinde dich über dein WordPress-Administratorkonto ohne einen Schlüssel zu kopieren. Die Anmeldung erfolgt automatisch im Browser-Tab. HTTPS und aktives Elementor Pro sind erforderlich."
-       ]
-     ],
-     "credit": "Mit Liebe aus Lagos, NG entwickelt",
-@@ -351,8 +391,8 @@
-   },
-   "pt": {
-     "name": "Português",
--    "title": "FontReady — Conversor de fontes WOFF2, WOFF, TTF, OTF e SVG",
--    "description": "Converta TTF, OTF, WOFF e WOFF2. Visualize e baixe arquivos individuais ou um kit com CSS. Links disponíveis por 24 minutos.",
-+    "title": "FontReady — Conversor de fontes e Elementor Pro",
-+    "description": "Converta TTF, OTF, WOFF e WOFF2, baixe um kit CSS ou instale fontes no Elementor Pro com uma conexão simples ao WordPress.",
-     "heading": "Um conversor de fontes para seu próximo site.",
-     "intro": "O FontReady converte TTF, OTF, WOFF e WOFF2 em fontes web e um kit CSS. Visualize, escolha os formatos e baixe arquivos ou o ZIP completo. Não é necessária uma conta FontReady.",
-     "formats_heading": "Qual formato de fonte usar?",
-@@ -414,10 +454,17 @@
+         "¿Cómo instalo fuentes en Elementor Pro?",
+-        "Instala y activa FontReady en WordPress. Abre Font to Elementor Pro, confirma Elementor Pro y tu dominio y conecta desde WordPress. Convierte las fuentes y pulsa Install fonts. Actualiza Elementor y busca la familia en el grupo FontReady."
++        "Convierte las fuentes en Font to Elementor Pro o abre allí un kit listo del convertidor principal. Pulsa Publish to Elementor Pro website, introduce tu URL y confirma que Elementor Pro y FontReady están instalados y activos. Aprueba en WordPress. Las fuentes seleccionadas se conservan y se publican en Custom Fonts de Elementor."
+       ],
        [
-         "Preciso de uma conta?",
-         "Não é necessária uma conta FontReady. As conversões recentes pertencem à sessão do navegador; links podem ser compartilhados enquanto válidos."
-+      ],
-+      [
-+        "Como instalar fontes no Elementor Pro?",
-+        "Instale e ative FontReady no WordPress. Abra Font to Elementor Pro, confirme Elementor Pro e seu domínio e conecte pelo WordPress. Converta as fontes e clique em Install fonts. Atualize o Elementor e encontre a família no grupo FontReady."
-+      ],
-+      [
-+        "Preciso de uma chave de conexão ou conta FontReady?",
-+        "Não. Conecte pela sua conta de administrador do WordPress sem copiar uma chave. A autenticação é automática na aba do navegador. HTTPS e Elementor Pro ativo são necessários."
-       ]
-     ],
-     "credit": "Desenvolvido com amor de Lagos, NG",
-     "languages": "Idiomas disponíveis"
-   }
- }
--
+         "¿Necesito una clave o cuenta de FontReady?",
+@@ -223,7 +223,7 @@
+       ],
+       [
+         "Как установить шрифты в Elementor Pro?",
+-        "Установите и активируйте FontReady в WordPress. Откройте Font to Elementor Pro, подтвердите Elementor Pro и домен, затем подключитесь через WordPress. Конвертируйте шрифты и нажмите Install fonts. Обновите Elementor и выберите семейство в группе FontReady."
++        "Конвертируйте шрифты на странице Font to Elementor Pro или откройте там готовый комплект из основного конвертера. Нажмите Publish to Elementor Pro website, введите URL и подтвердите, что Elementor Pro и FontReady установлены и активны. Подтвердите публикацию в WordPress. Выбранные шрифты сохраняются и публикуются в Custom Fonts Elementor."
+       ],
+       [
+         "Нужны ли ключ подключения или аккаунт FontReady?",
+@@ -301,7 +301,7 @@
+       ],
+       [
+         "Comment installer des polices dans Elementor Pro ?",
+-        "Installez et activez FontReady dans WordPress. Ouvrez Font to Elementor Pro, confirmez Elementor Pro et votre domaine, puis connectez-vous via WordPress. Convertissez vos polices et cliquez sur Install fonts. Actualisez Elementor et choisissez la famille dans le groupe FontReady."
++        "Convertissez les polices sur Font to Elementor Pro ou ouvrez-y un kit prêt du convertisseur principal. Cliquez sur Publish to Elementor Pro website, saisissez votre URL et confirmez que Elementor Pro et FontReady sont installés et actifs. Approuvez dans WordPress. Les polices sélectionnées sont conservées et publiées dans Custom Fonts d’Elementor."
+       ],
+       [
+         "Faut-il une clé de connexion ou un compte FontReady ?",
+@@ -379,7 +379,7 @@
+       ],
+       [
+         "Wie installiere ich Schriften in Elementor Pro?",
+-        "Installiere und aktiviere FontReady in WordPress. Öffne Font to Elementor Pro, bestätige Elementor Pro und deine Domain und verbinde dich über WordPress. Konvertiere die Schriften und klicke auf Install fonts. Aktualisiere Elementor und wähle die Familie in der Gruppe FontReady."
++        "Konvertiere Schriften auf Font to Elementor Pro oder öffne dort ein fertiges Paket aus dem Hauptkonverter. Klicke auf Publish to Elementor Pro website, gib deine URL ein und bestätige, dass Elementor Pro und FontReady installiert und aktiv sind. Bestätige in WordPress. Die ausgewählten Schriften bleiben erhalten und werden in Elementor Custom Fonts veröffentlicht."
+       ],
+       [
+         "Brauche ich einen Verbindungsschlüssel oder ein FontReady-Konto?",
+@@ -457,7 +457,7 @@
+       ],
+       [
+         "Como instalar fontes no Elementor Pro?",
+-        "Instale e ative FontReady no WordPress. Abra Font to Elementor Pro, confirme Elementor Pro e seu domínio e conecte pelo WordPress. Converta as fontes e clique em Install fonts. Atualize o Elementor e encontre a família no grupo FontReady."
++        "Converta as fontes em Font to Elementor Pro ou abra ali um kit pronto do conversor principal. Clique em Publish to Elementor Pro website, digite a URL e confirme que Elementor Pro e FontReady estão instalados e ativos. Aprove no WordPress. As fontes selecionadas são preservadas e publicadas em Custom Fonts do Elementor."
+       ],
+       [
+         "Preciso de uma chave de conexão ou conta FontReady?",
 diff --git a/converter/test_connection_metrics.py b/converter/test_connection_metrics.py
-new file mode 100644
-index 0000000..522cd45
---- /dev/null
+index 522cd45..63d4a39 100644
+--- a/converter/test_connection_metrics.py
 +++ b/converter/test_connection_metrics.py
-@@ -0,0 +1,72 @@
-+import json
-+import uuid
-+from datetime import timedelta
-+from urllib.parse import urlsplit, parse_qs
-+from django.contrib.auth import get_user_model
-+from django.test import TestCase, Client
-+from django.utils import timezone
-+from .models import Conversion, ConversionMetric, SiteConnection, PublishMetric
-+from .metrics import record_conversion
+@@ -10,7 +10,7 @@ from .metrics import record_conversion
+ 
+ class ConnectionTests(TestCase):
+     def start(self):
+-        response=self.client.post('/api/wordpress/connect/',data=json.dumps({'site':'https://example.com/','elementor_pro':True}),content_type='application/json')
++        response=self.client.post('/api/wordpress/connect/',data=json.dumps({'site':'https://example.com/','elementor_pro':True,'plugin_installed':True}),content_type='application/json')
+         self.assertEqual(response.status_code,200)
+         return parse_qs(urlsplit(response.json()['url']).query)['fontready_connect'][0]
+     def complete(self,state,site='https://example.com/'):
+@@ -30,7 +30,7 @@ class ConnectionTests(TestCase):
+         pair=session['fontready_pair'];pair['expires']=0;session['fontready_pair']=pair;session.save()
+         self.assertEqual(self.complete(state).status_code,400)
+         for site in ('http://example.com/','https://user:pass@example.com/','https://example.com/#x','https://example.com/?x=y','https://localhost/','https://example.com/../'):
+-            self.assertEqual(self.client.post('/api/wordpress/connect/',data=json.dumps({'site':site,'elementor_pro':True}),content_type='application/json').status_code,400)
++            self.assertEqual(self.client.post('/api/wordpress/connect/',data=json.dumps({'site':site,'elementor_pro':True,'plugin_installed':True}),content_type='application/json').status_code,400)
+         self.assertEqual(Client(enforce_csrf_checks=True).post('/api/wordpress/connect/',data='{}',content_type='application/json').status_code,403)
+         self.assertEqual(self.client.get('/api/wordpress/connect/').status_code,405)
+         self.assertEqual(self.client.post('/api/wordpress/connect/',data=json.dumps({'site':'https://example.com/','elementor_pro':False}),content_type='application/json').status_code,400)
+@@ -70,3 +70,24 @@ class MetricTests(TestCase):
+             self.assertEqual(response.context['top'],[('Example',2)])
+             self.assertEqual(len(response.context['daily']),{'week':7,'month':30,'year':365}[period])
+             self.assertNotIn('googletagmanager',response.content.decode());self.assertNotIn('clarity.ms',response.content.decode())
 +
-+class ConnectionTests(TestCase):
-+    def start(self):
-+        response=self.client.post('/api/wordpress/connect/',data=json.dumps({'site':'https://example.com/','elementor_pro':True}),content_type='application/json')
++
++class SelectedKitTests(TestCase):
++    def test_paired_batch_is_owned_and_returned_after_confirmation(self):
++        session=self.client.session;session.save()
++        job=Conversion.objects.create(owner=session.session_key,state='ready',results=[{'family':'Example','sizes':{'woff2':20}}],expires_at=timezone.now()+timedelta(minutes=24))
++        payload={'site':'https://example.com/','elementor_pro':True,'plugin_installed':True,'job':str(job.token)}
++        response=self.client.post('/api/wordpress/connect/',data=json.dumps(payload),content_type='application/json')
 +        self.assertEqual(response.status_code,200)
-+        return parse_qs(urlsplit(response.json()['url']).query)['fontready_connect'][0]
-+    def complete(self,state,site='https://example.com/'):
-+        return self.client.post('/api/wordpress/complete/',data=json.dumps({'state':state,'requested_site':'https://example.com/','site':site,'families':2,'variants':3}),content_type='application/json')
-+    def test_pairing_is_session_owned_and_single_use(self):
-+        state=self.start()
-+        self.assertEqual(self.complete('a'*64).status_code,400)
-+        self.assertEqual(Client().post('/api/wordpress/complete/',data=json.dumps({'state':state}),content_type='application/json').status_code,400)
-+        self.assertEqual(self.complete(state,'https://other.com/').status_code,400)
-+        response=self.complete(state)
-+        self.assertEqual(response.status_code,200)
-+        self.assertNotIn('key',response.json())
-+        self.assertEqual(SiteConnection.objects.get().variants,3)
-+        self.assertEqual(self.complete(state).status_code,400)
-+    def test_expiry_csrf_and_unsafe_urls(self):
-+        state=self.start();session=self.client.session
-+        pair=session['fontready_pair'];pair['expires']=0;session['fontready_pair']=pair;session.save()
-+        self.assertEqual(self.complete(state).status_code,400)
-+        for site in ('http://example.com/','https://user:pass@example.com/','https://example.com/#x','https://example.com/?x=y','https://localhost/','https://example.com/../'):
-+            self.assertEqual(self.client.post('/api/wordpress/connect/',data=json.dumps({'site':site,'elementor_pro':True}),content_type='application/json').status_code,400)
-+        self.assertEqual(Client(enforce_csrf_checks=True).post('/api/wordpress/connect/',data='{}',content_type='application/json').status_code,403)
-+        self.assertEqual(self.client.get('/api/wordpress/connect/').status_code,405)
-+        self.assertEqual(self.client.post('/api/wordpress/connect/',data=json.dumps({'site':'https://example.com/','elementor_pro':False}),content_type='application/json').status_code,400)
-+    def test_publish_reports_deduplicate_and_require_owner(self):
-+        self.complete(self.start());session=self.client.session
-+        job=Conversion.objects.create(owner=session.session_key,state='ready',results=[{'family':'Example','sizes':{'woff2':100}}],expires_at=timezone.now()+timedelta(minutes=24))
-+        url=f'/api/conversions/{job.token}/published/'
-+        self.assertEqual(self.client.post(url).status_code,200)
-+        self.assertEqual(self.client.post(url).status_code,200)
-+        self.assertEqual(PublishMetric.objects.count(),1)
-+        self.assertEqual(Client().post(url).status_code,409)
-+    def test_callback_strip_script_is_first_and_landing_seo(self):
++        query=parse_qs(urlsplit(response.json()['url']).query)
++        self.assertEqual(query['fontready_job'],[str(job.token)])
++        response=self.client.post('/api/wordpress/complete/',data=json.dumps({'state':query['fontready_connect'][0],'requested_site':payload['site'],'site':payload['site'],'families':0,'variants':0}),content_type='application/json')
++        self.assertEqual(response.json()['job'],str(job.token))
++        self.assertEqual(Client().post('/api/wordpress/connect/',data=json.dumps(payload),content_type='application/json').status_code,400)
++    def test_elementor_page_is_convert_first_and_confirms_both_plugins(self):
 +        page=self.client.get('/font-to-elementor-pro/').content.decode()
-+        self.assertIn('Font to Elementor Pro',page)
-+        self.assertIn('https://fontready.com/font-to-elementor-pro/',page)
-+        self.assertLess(page.index('wordpress-callback.js'),page.index('application/ld+json'))
-+        self.assertNotIn('Generate connection key',page)
-+
-+class MetricTests(TestCase):
-+    def test_counts_survive_deletion_and_duplicate_completion(self):
-+        job=Conversion.objects.create(owner='private',state='ready',results=[{'family':'Example','sizes':{'woff2':20}}])
-+        record_conversion(job);job.save();token=job.token;job.delete()
-+        metric=ConversionMetric.objects.get(token=token)
-+        self.assertEqual(metric.face_count,1)
-+        self.assertEqual(metric.fonts,['Example'])
-+        self.assertEqual(ConversionMetric.objects.count(),1)
-+    def test_owner_private_untracked_and_aggregates(self):
-+        self.assertEqual(self.client.get('/owner/').status_code,302)
-+        User=get_user_model();user=User.objects.create_user('reader',password='safe-pass-123');self.client.force_login(user)
-+        self.assertEqual(self.client.get('/owner/').status_code,403)
-+        admin=User.objects.create_superuser('owner',password='safe-pass-456');self.client.force_login(admin)
-+        ConversionMetric.objects.create(token=uuid.uuid4(),created_at=timezone.now(),fonts=['Example','Example'],face_count=2)
-+        for period in ('week','month','year'):
-+            response=self.client.get('/owner/',{'period':period})
-+            self.assertEqual(response.status_code,200)
-+            self.assertIn('noindex',response['X-Robots-Tag']);self.assertIn('no-store',response['Cache-Control'])
-+            self.assertEqual(response.context['top'],[('Example',2)])
-+            self.assertEqual(len(response.context['daily']),{'week':7,'month':30,'year':365}[period])
-+            self.assertNotIn('googletagmanager',response.content.decode());self.assertNotIn('clarity.ms',response.content.decode())
-diff --git a/converter/test_seo.py b/converter/test_seo.py
-index 872149a..b7dded5 100644
---- a/converter/test_seo.py
-+++ b/converter/test_seo.py
-@@ -41,7 +41,7 @@ class PublicSeoTests(SimpleTestCase):
-             graph=json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>',page,re.S)[1])
-             faq=next(item for item in graph['@graph'] if item['@type']=='FAQPage')
-             self.assertEqual(faq['inLanguage'],code)
--            self.assertEqual(len(faq['mainEntity']),8)
-+            self.assertEqual(len(faq['mainEntity']),10)
-             for question in faq['mainEntity']:
-                 self.assertIn(html.escape(question['name']),page)
-                 self.assertIn(html.escape(question['acceptedAnswer']['text']),page)
-@@ -51,7 +51,7 @@ class PublicSeoTests(SimpleTestCase):
-     def test_sitemap_and_robots_only_advertise_public_pages(self):
-         xml=ElementTree.fromstring(self.public_get('/sitemap.xml').content)
-         locations=[node.text for node in xml.findall('{*}url/{*}loc')]
--        self.assertEqual(set(locations),{'https://fontready.com'+language_path(code) for code in LANGUAGES})
-+        self.assertEqual(set(locations),{'https://fontready.com'+language_path(code) for code in LANGUAGES} | {'https://fontready.com/font-to-elementor-pro/'})
-         robots=self.public_get('/robots.txt').content.decode()
-         self.assertIn('Sitemap: https://fontready.com/sitemap.xml',robots)
-         for path in ('/api/','/downloads/','/font-info/','/health/'):
++        self.assertIn('data-elementor="true"',page)
++        self.assertIn('id="wordpress-plugin"',page)
++        self.assertLess(page.index('id="dropzone"'),page.index('id="wordpress-site"'))
++        self.assertNotIn('value="svg"',page)
++        self.assertIn('id="elementor-publish-link"',self.client.get('/').content.decode())
 diff --git a/converter/test_wordpress.py b/converter/test_wordpress.py
-new file mode 100644
-index 0000000..fd0c605
---- /dev/null
+index fd0c605..6e560cf 100644
+--- a/converter/test_wordpress.py
 +++ b/converter/test_wordpress.py
-@@ -0,0 +1,108 @@
-+import base64
-+import io
-+import tempfile
-+from datetime import timedelta
-+from pathlib import Path
-+from unittest.mock import patch, Mock
-+from django.core.files.uploadedfile import SimpleUploadedFile
-+from django.test import TestCase, Client, override_settings
-+from django.utils import timezone
-+from fontTools.ttLib import TTFont
-+from .models import Conversion
-+from .jobs import run_next
-+from .tests import font_bytes
+@@ -106,3 +106,12 @@ class WordPressExportTests(TestCase):
+         self.assertEqual(download.status_code, 200)
+         self.assertEqual(download['Content-Type'], 'application/zip')
+         download.close()
 +
-+
-+class WordPressExportTests(TestCase):
-+    def setUp(self):
-+        temp = tempfile.TemporaryDirectory()
-+        self.addCleanup(temp.cleanup)
-+        settings = override_settings(PRIVATE_ROOT=Path(temp.name), AI_ENABLED=False)
-+        settings.enable()
-+        self.addCleanup(settings.disable)
-+
-+    def convert(self, formats=('woff2', 'woff')):
-+        response = self.client.post('/api/conversions/', {'fonts': SimpleUploadedFile('test.ttf', font_bytes()), 'formats': list(formats)})
-+        self.assertEqual(response.status_code, 202)
-+        run_next()
-+        self.job = Conversion.objects.get()
-+        self.assertEqual(self.job.state, 'ready', self.job.error)
-+        self.url = f'/api/conversions/{self.job.token}/wordpress/'
-+        return self.job
-+
-+    def test_export_prefers_woff2_and_roundtrips_real_font(self):
-+        job = self.convert()
++    def test_otf_only_kit_is_wrapped_for_native_elementor(self):
++        self.convert(('otf',))
 +        response = self.client.post(self.url)
 +        self.assertEqual(response.status_code, 200)
 +        font = response.json()['fonts'][0]
 +        self.assertEqual(font['format'], 'woff2')
-+        self.assertEqual(font['family'], job.results[0]['family'])
 +        with TTFont(io.BytesIO(base64.b64decode(font['data']))) as parsed:
-+            self.assertEqual(parsed.getBestCmap(), {32: 'space', 65: 'A', 66: 'B'})
-+        self.assertIn('no-store', response['Cache-Control'])
-+
-+    def test_owner_expiry_readiness_csrf_and_method(self):
-+        job = self.convert()
-+        self.assertEqual(Client().post(self.url).status_code, 404)
-+        self.assertEqual(self.client.get(self.url).status_code, 405)
-+        csrf_client = Client(enforce_csrf_checks=True)
-+        csrf_client.cookies = self.client.cookies.copy()
-+        self.assertEqual(csrf_client.post(self.url).status_code, 403)
-+        job.state = 'processing'
-+        job.save()
-+        self.assertEqual(self.client.post(self.url).status_code, 409)
-+        job.state = 'ready'
-+        job.expires_at = timezone.now() - timedelta(seconds=1)
-+        job.save()
-+        self.assertEqual(self.client.post(self.url).status_code, 410)
-+
-+    def test_svg_only_is_not_publishable(self):
-+        self.convert(('svg',))
-+        self.assertEqual(self.client.post(self.url).status_code, 400)
-+
-+    def test_s3_export_is_scoped_and_closes_stream(self):
-+        job = self.convert(('ttf',))
-+        name = job.results[0]['files']['ttf']
-+        data = font_bytes()
-+        job.results[0]['sizes']['ttf'] = len(data)
-+        job.storage_prefix = f'fontready-test/{job.token}'
-+        job.options['storage_backend'] = 's3'
-+        job.blob_assets = {'fonts': {name: {'path': job.storage_prefix + '/output/' + name}}}
-+        job.save()
-+        stream = io.BytesIO(data)
-+        client = Mock()
-+        client.get_object.return_value = {'Body': stream}
-+        with patch('converter.object_storage.client', return_value=client):
-+            self.assertEqual(self.client.post(self.url).status_code, 200)
-+            self.assertTrue(stream.closed)
-+            job.blob_assets['fonts'][name]['path'] = 'other-job/output/font.ttf'
-+            job.save()
-+            self.assertEqual(self.client.post(self.url).status_code, 503)
-+            self.assertEqual(client.get_object.call_count, 1)
-+
-+    def test_blob_export_and_oversized_asset(self):
-+        job = self.convert(('ttf',))
-+        name = job.results[0]['files']['ttf']
-+        data = font_bytes()
-+        job.results[0]['sizes']['ttf'] = len(data)
-+        job.storage_prefix = f'blob/{job.token}'
-+        job.blob_assets = {'fonts': {name: {'path': job.storage_prefix + '/output/' + name}}}
-+        job.save()
-+        def fetch(path, target, size):
-+            target.write_bytes(data)
-+        with patch('converter.cloud_storage.fetch_input', side_effect=fetch) as storage:
-+            self.assertEqual(self.client.post(self.url).status_code, 200)
-+            job.results[0]['sizes']['ttf'] = 6 * 1024 * 1024
-+            job.save()
-+            self.assertEqual(self.client.post(self.url).status_code, 503)
-+            self.assertEqual(storage.call_count, 1)
-+
-+    def test_missing_archive_and_downloadable_plugin(self):
-+        job = self.convert()
-+        from django.conf import settings
-+        (settings.PRIVATE_ROOT / str(job.token) / 'fontready.zip').unlink()
-+        self.assertEqual(self.client.post(self.url).status_code, 503)
-+        download = self.client.get('/wordpress-plugin/')
-+        self.assertEqual(download.status_code, 200)
-+        self.assertEqual(download['Content-Type'], 'application/zip')
-+        download.close()
++            self.assertIn('CFF ', parsed)
 diff --git a/converter/wordpress.py b/converter/wordpress.py
-new file mode 100644
-index 0000000..9529616
---- /dev/null
+index 9529616..9a915a3 100644
+--- a/converter/wordpress.py
 +++ b/converter/wordpress.py
-@@ -0,0 +1,186 @@
-+"""Session-private export. WordPress credentials never enter the Django server."""
-+import base64
-+import tempfile
-+import zipfile
-+from pathlib import Path
-+
-+from django.conf import settings
-+from django.http import JsonResponse, FileResponse
-+from django.views.decorators.cache import never_cache
-+from django.views.decorators.http import require_POST
-+
-+from .models import Conversion
-+from .views import owner
-+
-+
-+def font_bytes(job, filename, size):
-+    if not 0 < size <= settings.MAX_FILE_BYTES or Path(filename).name != filename:
-+        raise ValueError('Invalid font asset')
-+    if job.storage_prefix:
-+        asset = job.blob_assets.get('fonts', {}).get(filename, {})
-+        path = asset.get('path', '')
-+        if not path.startswith(job.storage_prefix + '/output/'):
-+            raise ValueError('Invalid font scope')
-+        if job.options.get('storage_backend') == 's3':
-+            from . import object_storage
-+            if job.storage_prefix != object_storage.prefix(job.token):
-+                raise ValueError('Invalid object scope')
-+            response = object_storage.client().get_object(Bucket=settings.S3_BUCKET, Key=path)
-+            stream = response['Body']
-+            try:
-+                data = stream.read(size + 1)
-+            finally:
-+                stream.close()
-+        else:
-+            from . import cloud_storage
-+            with tempfile.TemporaryDirectory() as directory:
-+                target = Path(directory) / 'font'
-+                cloud_storage.fetch_input(path, target, size)
-+                data = target.read_bytes()
-+    else:
-+        with zipfile.ZipFile(settings.PRIVATE_ROOT / str(job.token) / 'fontready.zip') as archive:
-+            member = archive.getinfo('fonts/' + filename)
-+            if member.file_size != size:
-+                raise ValueError('Invalid font size')
-+            with archive.open(member) as stream:
-+                data = stream.read(size + 1)
-+    if len(data) != size:
-+        raise ValueError('Invalid font size')
-+    return data
-+
-+
-+@never_cache
-+@require_POST
-+def bundle(request, token):
-+    job = Conversion.objects.filter(token=token, owner=owner(request)).first()
-+    if not job:
-+        return JsonResponse({'error': 'Conversion not found.'}, status=404)
-+    if job.expired:
-+        return JsonResponse({'error': 'This kit has expired. Convert your fonts again.'}, status=410)
-+    if job.state != 'ready':
-+        return JsonResponse({'error': 'Your fonts are not ready.'}, status=409)
-+    if not 1 <= len(job.results) <= settings.MAX_FILES:
-+        return JsonResponse({'error': 'Invalid font batch.'}, status=400)
-+    fonts, total = [], 0
-+    try:
-+        for font in job.results:
-+            fmt = next((f for f in ('woff2', 'woff', 'ttf', 'otf') if f in font.get('files', {})), None)
-+            if not fmt:
-+                return JsonResponse({'error': 'Select WOFF2, WOFF, TTF or OTF when converting. SVG cannot be published.'}, status=400)
-+            size = int(font['sizes'][fmt])
-+            total += size
-+            if total > settings.MAX_BATCH_BYTES:
-+                return JsonResponse({'error': 'The WordPress batch exceeds 25 MB. Convert fewer fonts.'}, status=400)
-+            data = font_bytes(job, font['files'][fmt], size)
-+            fonts.append({'family': font['family'], 'weight': str(font['weight']),
-+                          'style': font['style'], 'format': fmt,
-+                          'data': base64.b64encode(data).decode('ascii')})
-+    except Exception:
-+        return JsonResponse({'error': 'Font files are unavailable. Try again or convert a new kit.'}, status=503)
-+    return JsonResponse({'version': 1, 'fonts': fonts})
-+
-+
-+def plugin_download(request):
-+    path = settings.BASE_DIR / 'wordpress' / 'fontready-wordpress.zip'
-+    if not path.is_file():
-+        return JsonResponse({'error': 'Plugin download unavailable.'}, status=503)
-+    return FileResponse(path.open('rb'), as_attachment=True, filename='fontready-wordpress.zip', content_type='application/zip')
-+
-+
-+import json
-+import re
-+import secrets
-+import time
-+from urllib.parse import urlsplit, urlunsplit, urlencode
-+from django.shortcuts import render
-+from django.views.decorators.csrf import ensure_csrf_cookie
-+from .models import SiteConnection, PublishMetric
-+from django.utils import timezone
-+
-+
-+def normalize_site(value):
-+    if not isinstance(value, str) or len(value) > 500:
-+        raise ValueError('Enter your HTTPS website URL.')
-+    parsed = urlsplit(value.strip())
-+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.port not in (None, 443):
-+        raise ValueError('Enter your HTTPS website URL without a query or fragment.')
-+    host = parsed.hostname.lower()
-+    if '.' not in host or host in ('localhost', '127.0.0.1') or ':' in host or not re.fullmatch(r'[a-z0-9.-]+', host):
-+        raise ValueError('Enter your public website domain.')
-+    path = parsed.path.rstrip('/')
-+    if any(part in ('.', '..') for part in path.split('/')) or '%' in path or '\\' in path:
-+        raise ValueError('Enter the website URL from your WordPress settings.')
-+    return urlunsplit(('https', host, path+'/', '', ''))
-+
-+
-+@never_cache
-+@require_POST
-+def start_connection(request):
-+    try:
-+        data = json.loads(request.body)
-+        site = normalize_site(data.get('site'))
-+        if data.get('elementor_pro') is not True:
-+            raise ValueError('Confirm you have Elementor Pro installed.')
-+    except (ValueError, TypeError, AttributeError):
-+        return JsonResponse({'error':'Confirm Elementor Pro and enter your public HTTPS website URL.'}, status=400)
-+    state = secrets.token_hex(32)
-+    request.session['fontready_pair'] = {'state':state, 'site':site, 'expires':time.time()+600}
-+    return JsonResponse({'url':site+'wp-admin/admin.php?'+urlencode({'page':'fontready','fontready_connect':state})})
-+
-+
-+@never_cache
-+@require_POST
-+def complete_connection(request):
-+    try:
-+        data = json.loads(request.body)
-+        pair = request.session.get('fontready_pair', {})
-+        if pair.get('expires',0) < time.time() or not isinstance(data.get('state'),str) or not secrets.compare_digest(pair.get('state',''), data['state']):
-+            raise ValueError('This connection request expired. Connect your website again.')
-+        if normalize_site(data.get('requested_site')) != pair['site']:
-+            raise ValueError('The connection does not match the requested website.')
-+        site = normalize_site(data.get('site'))
-+        if urlsplit(site).hostname != urlsplit(pair['site']).hostname:
-+            raise ValueError('The confirmed website domain does not match.')
-+        families, variants = int(data['families']), int(data['variants'])
-+        if not 0 <= families <= variants <= 100:
-+            raise ValueError('Invalid font totals.')
-+    except (ValueError, KeyError, TypeError, AttributeError):
-+        return JsonResponse({'error':'Connection could not be confirmed. Start again from FontReady.'}, status=400)
-+    SiteConnection.objects.update_or_create(site=site, defaults={'last_seen':timezone.now(),'families':families,'variants':variants})
-+    request.session.pop('fontready_pair', None)
-+    request.session['fontready_site'] = site
-+    return JsonResponse({'connected':True, 'site':site})
-+
-+
-+@never_cache
-+@require_POST
-+def report_publish(request, token):
-+    site = request.session.get('fontready_site')
-+    job = Conversion.objects.filter(token=token, owner=owner(request), state='ready').first()
-+    connection = SiteConnection.objects.filter(site=site).first()
-+    if not job or not connection or job.expired:
-+        return JsonResponse({'error':'Connection or conversion unavailable.'}, status=409)
-+    PublishMetric.objects.get_or_create(conversion=job.token, site=connection, defaults={'face_count':len(job.results)})
-+    connection.last_seen=timezone.now()
-+    connection.save(update_fields=['last_seen'])
-+    return JsonResponse({'recorded':True})
-+
-+
-+@ensure_csrf_cookie
-+def elementor_page(request):
-+    from .seo import page_context
-+    context = page_context(request)
-+    context['seo'] = dict(context['seo'], title='Font to Elementor Pro — FontReady', description='Convert fonts and install them on your Elementor Pro website. Confirm your domain, connect through WordPress and publish without copying connection keys.')
-+    context['canonical'] = settings.PUBLIC_SITE_URL.rstrip('/')+'/font-to-elementor-pro/'
-+    context['languages'] = []
-+    for entity in context['structured_data']['@graph']:
-+        if entity['@type'] == 'WebPage':
-+            entity.update({'@id':context['canonical']+'#page','url':context['canonical'],'name':context['seo']['title'],'description':context['seo']['description']})
-+        if entity['@type'] == 'FAQPage':
-+            entity['@id']=context['canonical']+'#questions'
-+    context['elementor_page'] = True
-+    return render(request, 'index.html', context)
-+
-+
-+def privacy(request):
-+    return render(request, 'privacy.html')
-diff --git a/scripts/build_wordpress.py b/scripts/build_wordpress.py
-new file mode 100644
-index 0000000..ef58e79
---- /dev/null
-+++ b/scripts/build_wordpress.py
-@@ -0,0 +1,15 @@
-+"""Reproducible, installable ZIP. No build tools required on the WordPress host."""
-+from pathlib import Path
-+import zipfile
-+
-+root = Path(__file__).resolve().parent.parent
-+source = root / 'wordpress' / 'fontready'
-+target = root / 'wordpress' / 'fontready-wordpress.zip'
-+with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-+    for path in sorted(source.rglob('*')):
-+        if path.is_file():
-+            member = zipfile.ZipInfo(str(path.relative_to(source.parent)), (2026, 1, 1, 0, 0, 0))
-+            member.compress_type = zipfile.ZIP_DEFLATED
-+            member.external_attr = 0o644 << 16
-+            archive.writestr(member, path.read_bytes())
-+print(target)
-diff --git a/scripts/check_wordpress.py b/scripts/check_wordpress.py
-new file mode 100644
-index 0000000..50a906b
---- /dev/null
-+++ b/scripts/check_wordpress.py
-@@ -0,0 +1,34 @@
-+"""Exercise the PHP import contract with real converted font fixtures."""
-+import base64
-+import json
-+import os
-+from pathlib import Path
-+import subprocess
-+import sys
-+import tempfile
-+
-+root = Path(__file__).resolve().parent.parent
-+sys.path.insert(0, str(root))
-+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
-+import django
-+django.setup()
-+from converter.engine import convert
-+from converter.tests import font_bytes
-+
-+php = os.getenv('PHP_BINARY', 'php')
-+for source in (root / 'wordpress' / 'fontready').rglob('*.php'):
-+    subprocess.run([php, '-n', '-l', str(source)], check=True)
-+with tempfile.TemporaryDirectory() as directory:
-+    folder = Path(directory)
-+    (folder / 'input').mkdir()
-+    data = font_bytes()
-+    (folder / 'input' / '0.ttf').write_bytes(data)
-+    convert(folder, [{'file': '0.ttf', 'name': 'test.ttf', 'size': len(data)}],
-+            {'formats': ['woff2', 'woff', 'ttf', 'otf'], 'font_display': 'swap'})
-+    result = json.loads((folder / 'result.json').read_text())['results'][0]
-+    fonts = [{'family': 'FontReady Test', 'weight': str((i+1)*100), 'style': 'normal', 'format': fmt,
-+              'data': base64.b64encode((folder / 'output' / name).read_bytes()).decode()}
-+             for i, (fmt, name) in enumerate(result['files'].items())]
-+    fixture = folder / 'fixture.json'
-+    fixture.write_text(json.dumps({'version': 1, 'fonts': fonts}))
-+    subprocess.run([php, '-n', str(root / 'wordpress' / 'tests' / 'plugin.php'), str(fixture)], check=True)
+@@ -5,6 +5,7 @@ import zipfile
+ from pathlib import Path
+ 
+ from django.conf import settings
++from django.core.exceptions import ValidationError
+ from django.http import JsonResponse, FileResponse
+ from django.views.decorators.cache import never_cache
+ from django.views.decorators.http import require_POST
+@@ -66,12 +67,24 @@ def bundle(request, token):
+         for font in job.results:
+             fmt = next((f for f in ('woff2', 'woff', 'ttf', 'otf') if f in font.get('files', {})), None)
+             if not fmt:
+-                return JsonResponse({'error': 'Select WOFF2, WOFF, TTF or OTF when converting. SVG cannot be published.'}, status=400)
++                return JsonResponse({'error': 'Choose WOFF2, WOFF or TTF for Elementor publishing. Convert again with WOFF2 selected.'}, status=400)
+             size = int(font['sizes'][fmt])
+             total += size
+             if total > settings.MAX_BATCH_BYTES:
+                 return JsonResponse({'error': 'The WordPress batch exceeds 25 MB. Convert fewer fonts.'}, status=400)
+             data = font_bytes(job, font['files'][fmt], size)
++            if fmt == 'otf':
++                import io
++                from fontTools.ttLib import TTFont
++                with TTFont(io.BytesIO(data)) as parsed:
++                    parsed.flavor = 'woff2'
++                    output = io.BytesIO()
++                    parsed.save(output)
++                data = output.getvalue()
++                total += len(data) - size
++                if len(data) > settings.MAX_FILE_BYTES or total > settings.MAX_BATCH_BYTES:
++                    return JsonResponse({'error':'The Elementor font batch is too large.'}, status=400)
++                fmt = 'woff2'
+             fonts.append({'family': font['family'], 'weight': str(font['weight']),
+                           'style': font['style'], 'format': fmt,
+                           'data': base64.b64encode(data).decode('ascii')})
+@@ -119,13 +132,23 @@ def start_connection(request):
+     try:
+         data = json.loads(request.body)
+         site = normalize_site(data.get('site'))
+-        if data.get('elementor_pro') is not True:
++        if data.get('elementor_pro') is not True or data.get('plugin_installed') is not True:
+             raise ValueError('Confirm you have Elementor Pro installed.')
+     except (ValueError, TypeError, AttributeError):
+         return JsonResponse({'error':'Confirm Elementor Pro and enter your public HTTPS website URL.'}, status=400)
++    job_id = data.get('job')
++    if job_id:
++        try:
++            job = Conversion.objects.get(token=job_id, owner=owner(request), state='ready')
++        except (Conversion.DoesNotExist, ValueError, ValidationError):
++            return JsonResponse({'error':'Select a ready conversion before publishing.'}, status=400)
++        if job.expired:
++            return JsonResponse({'error':'Your kit expired. Convert the fonts again.'}, status=410)
+     state = secrets.token_hex(32)
+-    request.session['fontready_pair'] = {'state':state, 'site':site, 'expires':time.time()+600}
+-    return JsonResponse({'url':site+'wp-admin/admin.php?'+urlencode({'page':'fontready','fontready_connect':state})})
++    request.session['fontready_pair'] = {'state':state, 'site':site, 'expires':time.time()+600, 'job':str(job_id) if job_id else None}
++    params = {'page':'fontready','fontready_connect':state}
++    if job_id: params['fontready_job'] = str(job_id)
++    return JsonResponse({'url':site+'wp-admin/admin.php?'+urlencode(params)})
+ 
+ 
+ @never_cache
+@@ -142,14 +165,15 @@ def complete_connection(request):
+         if urlsplit(site).hostname != urlsplit(pair['site']).hostname:
+             raise ValueError('The confirmed website domain does not match.')
+         families, variants = int(data['families']), int(data['variants'])
+-        if not 0 <= families <= variants <= 100:
++        if not 0 <= families <= variants <= 1000000:
+             raise ValueError('Invalid font totals.')
+     except (ValueError, KeyError, TypeError, AttributeError):
+         return JsonResponse({'error':'Connection could not be confirmed. Start again from FontReady.'}, status=400)
+     SiteConnection.objects.update_or_create(site=site, defaults={'last_seen':timezone.now(),'families':families,'variants':variants})
++    job_id = pair.get('job')
+     request.session.pop('fontready_pair', None)
+     request.session['fontready_site'] = site
+-    return JsonResponse({'connected':True, 'site':site})
++    return JsonResponse({'connected':True, 'site':site, 'job':job_id})
+ 
+ 
+ @never_cache
+@@ -178,6 +202,8 @@ def elementor_page(request):
+             entity.update({'@id':context['canonical']+'#page','url':context['canonical'],'name':context['seo']['title'],'description':context['seo']['description']})
+         if entity['@type'] == 'FAQPage':
+             entity['@id']=context['canonical']+'#questions'
++    context['seo']['heading'] = 'Your fonts, straight to Elementor Pro.'
++    context['seo']['intro'] = 'Convert your fonts here, confirm your website and publish the selected batch into Elementor Custom Fonts.'
+     context['elementor_page'] = True
+     return render(request, 'index.html', context)
+ 
 diff --git a/scripts/check_wordpress_ui.cjs b/scripts/check_wordpress_ui.cjs
-new file mode 100644
-index 0000000..90e70ae
---- /dev/null
+index 90e70ae..ce57e68 100644
+--- a/scripts/check_wordpress_ui.cjs
 +++ b/scripts/check_wordpress_ui.cjs
-@@ -0,0 +1,22 @@
-+const fs=require('fs'),vm=require('vm'),assert=require('assert');
-+const source=fs.readFileSync('static/wordpress.js','utf8');
-+const good={endpoint:'https://site.example/wp-json/fontready/v1/fonts',status:'https://site.example/wp-json/fontready/v1/connection',site:'https://site.example/',key:'a'.repeat(64),expires:Math.floor(Date.now()/1000)+3600};
-+function setup({preview=false,expired=false,code=200,connection=good,callback=null}={}){
-+ const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-site','wordpress-pro','wordpress-connect','connection-status','wordpress-disconnect'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:''};
-+ const saved=new Map();if(connection)saved.set('fontready.website.v2',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
-+ const calls=[];const context={window:{fontreadyCallback:callback},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},location:{assign(url){calls.push({kind:'navigate',url})}},document:{getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
-+ vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved};
-+}
-+(async()=>{
-+ let checks=0;const check=(v,msg)=>{assert(v,msg);checks++};
-+ let x=setup();await x.nodes['wordpress-publish'].onclick();check(x.calls.length===3,'Bundle, import and receipt');
-+ check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Secret never sent to Django');
-+ const call=x.calls.find(c=>c.kind==='wp');check(call.options.headers.Authorization==='Bearer '+good.key,'Automatic WordPress auth');check(call.options.credentials==='omit'&&call.options.redirect==='error','No cookies or redirects');check(x.nodes['wordpress-status'].textContent.includes('Installed on site.example'),'Success feedback');
-+ for(const endpoint of ['http://site.example/wp-json/fontready/v1/fonts','https://evil.example/wp-json/fontready/v1/fonts','https://user:pass@site.example/wp-json/fontready/v1/fonts','https://site.example/elsewhere','https://site.example/wp-json/fontready/v1/fonts#secret']){x=setup({connection:{...good,endpoint}});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Unsafe endpoint rejected');}
-+ x=setup({connection:{...good,endpoint:'https://site.example/?rest_route=/fontready/v1/fonts',status:'https://site.example/?rest_route=/fontready/v1/connection'}});await x.nodes['wordpress-publish'].onclick();check(x.calls.length===3,'Query REST supported');
-+ x=setup({expired:true});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Expired kit blocked');x=setup({preview:true});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Preview blocked');x=setup({connection:null});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Connection required');
-+ x=setup({code:401});await x.nodes['wordpress-publish'].onclick();check(!x.saved.has('fontready.website.v2'),'Revoked connection cleared');x=setup();x.nodes['wordpress-disconnect'].onclick();check(!x.saved.has('fontready.website.v2'),'Disconnect clears credential');
-+ x=setup({connection:null,callback:{...good,state:'b'.repeat(64)}});await new Promise(resolve=>setImmediate(resolve));check(x.saved.has('fontready.website.v2'),'Callback confirmed and stored');check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Callback secret excluded from server');
-+ const order=[];const callbackContext={location:{hash:'#fontready='+encodeURIComponent(JSON.stringify(good)),pathname:'/font-to-elementor-pro/',search:''},history:{replaceState(){order.push('stripped')}},window:{},JSON,decodeURIComponent};vm.runInNewContext(fs.readFileSync('static/wordpress-callback.js','utf8'),callbackContext);check(order[0]==='stripped'&&callbackContext.window.fontreadyCallback.key===good.key,'Fragment stripped synchronously');
-+ console.log(`Passed ${checks} seamless publishing UI contract checks.`);
-+})().catch(e=>{console.error(e);process.exit(1)});
+@@ -1,22 +1,24 @@
+ const fs=require('fs'),vm=require('vm'),assert=require('assert');
+ const source=fs.readFileSync('static/wordpress.js','utf8');
+ const good={endpoint:'https://site.example/wp-json/fontready/v1/fonts',status:'https://site.example/wp-json/fontready/v1/connection',site:'https://site.example/',key:'a'.repeat(64),expires:Math.floor(Date.now()/1000)+3600};
+-function setup({preview=false,expired=false,code=200,connection=good,callback=null}={}){
+- const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-site','wordpress-pro','wordpress-connect','connection-status','wordpress-disconnect'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:''};
+- const saved=new Map();if(connection)saved.set('fontready.website.v2',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
+- const calls=[];const context={window:{fontreadyCallback:callback},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},location:{assign(url){calls.push({kind:'navigate',url})}},document:{getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
+- vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved};
++function setup({preview=false,expired=false,code=200,connection=good,callback=null,elementor=false,kit=null}={}){
++ const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-site','wordpress-pro','wordpress-connect','wordpress-plugin','website-confirmation','elementor-manage','result','connection-status','wordpress-disconnect'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:'',hidden:false,scrollIntoView(){}};
++ const saved=new Map();if(connection)saved.set('fontready.website.v3',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
++ if(kit){saved.set('fontready.selected-kit',kit);saved.set('fontready.pending-publish',kit);}
++ const calls=[];const context={window:{fontreadyCallback:callback},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},history:{replaceState(){}},location:{href:'https://fontready.com/font-to-elementor-pro/'+(kit?'?kit='+kit:''),assign(url){calls.push({kind:'navigate',url})}},document:{body:{dataset:{elementor:elementor?'true':'false'}},getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});if(path.endsWith('/complete/'))return {job:kit};if(path.startsWith('/api/conversions/')&&!options)return {id:kit,state:'ready',expires_at:new Date(Date.now()+60000).toISOString(),results:[]};return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,native_custom_fonts:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
++ context.showResult=job=>{context.activeJob=job;};vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved};
+ }
+ (async()=>{
+  let checks=0;const check=(v,msg)=>{assert(v,msg);checks++};
+- let x=setup();await x.nodes['wordpress-publish'].onclick();check(x.calls.length===3,'Bundle, import and receipt');
++ let x=setup();await x.nodes['wordpress-publish'].onclick();check(x.calls.length===4,'Bundle, import and receipt');
+  check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Secret never sent to Django');
+- const call=x.calls.find(c=>c.kind==='wp');check(call.options.headers.Authorization==='Bearer '+good.key,'Automatic WordPress auth');check(call.options.credentials==='omit'&&call.options.redirect==='error','No cookies or redirects');check(x.nodes['wordpress-status'].textContent.includes('Installed on site.example'),'Success feedback');
++ const call=x.calls.find(c=>c.kind==='wp');check(call.options.headers.Authorization==='Bearer '+good.key,'Automatic WordPress auth');check(call.options.credentials==='omit'&&call.options.redirect==='error','No cookies or redirects');check(x.nodes['wordpress-status'].textContent.includes('Published to Elementor Custom Fonts on site.example'),'Success feedback');
+  for(const endpoint of ['http://site.example/wp-json/fontready/v1/fonts','https://evil.example/wp-json/fontready/v1/fonts','https://user:pass@site.example/wp-json/fontready/v1/fonts','https://site.example/elsewhere','https://site.example/wp-json/fontready/v1/fonts#secret']){x=setup({connection:{...good,endpoint}});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Unsafe endpoint rejected');}
+- x=setup({connection:{...good,endpoint:'https://site.example/?rest_route=/fontready/v1/fonts',status:'https://site.example/?rest_route=/fontready/v1/connection'}});await x.nodes['wordpress-publish'].onclick();check(x.calls.length===3,'Query REST supported');
++ x=setup({connection:{...good,endpoint:'https://site.example/?rest_route=/fontready/v1/fonts',status:'https://site.example/?rest_route=/fontready/v1/connection'}});await x.nodes['wordpress-publish'].onclick();check(x.calls.length===4,'Query REST supported');
+  x=setup({expired:true});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Expired kit blocked');x=setup({preview:true});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Preview blocked');x=setup({connection:null});await x.nodes['wordpress-publish'].onclick();check(!x.calls.length,'Connection required');
+- x=setup({code:401});await x.nodes['wordpress-publish'].onclick();check(!x.saved.has('fontready.website.v2'),'Revoked connection cleared');x=setup();x.nodes['wordpress-disconnect'].onclick();check(!x.saved.has('fontready.website.v2'),'Disconnect clears credential');
+- x=setup({connection:null,callback:{...good,state:'b'.repeat(64)}});await new Promise(resolve=>setImmediate(resolve));check(x.saved.has('fontready.website.v2'),'Callback confirmed and stored');check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Callback secret excluded from server');
++ x=setup({code:401});await x.nodes['wordpress-publish'].onclick();check(!x.saved.has('fontready.website.v3'),'Revoked connection cleared');x=setup();x.nodes['wordpress-disconnect'].onclick();check(!x.saved.has('fontready.website.v3'),'Disconnect clears credential');
++ x=setup({connection:null,callback:{...good,state:'b'.repeat(64)}});await new Promise(resolve=>setImmediate(resolve));check(x.saved.has('fontready.website.v3'),'Callback confirmed and stored');check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Callback secret excluded from server');
++ const id='12345678-1234-1234-1234-123456789abc';x=setup({connection:null,callback:{...good,state:'b'.repeat(64)},elementor:true,kit:id});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));check(x.calls.some(c=>c.kind==='wp'&&c.path===good.endpoint),'Selected kit automatically published after approval');check(!x.saved.has('fontready.pending-publish'),'Approval resumes only once');
+  const order=[];const callbackContext={location:{hash:'#fontready='+encodeURIComponent(JSON.stringify(good)),pathname:'/font-to-elementor-pro/',search:''},history:{replaceState(){order.push('stripped')}},window:{},JSON,decodeURIComponent};vm.runInNewContext(fs.readFileSync('static/wordpress-callback.js','utf8'),callbackContext);check(order[0]==='stripped'&&callbackContext.window.fontreadyCallback.key===good.key,'Fragment stripped synchronously');
+  console.log(`Passed ${checks} seamless publishing UI contract checks.`);
+ })().catch(e=>{console.error(e);process.exit(1)});
+diff --git a/scripts/export_preview.py b/scripts/export_preview.py
+index 0d6177f..c5cad83 100644
+--- a/scripts/export_preview.py
++++ b/scripts/export_preview.py
+@@ -19,10 +19,20 @@ request=RequestFactory().get('/',HTTP_HOST='localhost')
+ context=page_context(request)
+ context.update(indexable=False,analytics_enabled=False)
+ markup=render_to_string('index.html',context)
+-markup=markup.replace('<body data-interface-language="en">','<body data-preview="true" data-interface-language="en">')
++markup=markup.replace('<body data-interface-language="en"','<body data-preview="true" data-interface-language="en"')
+ markup=markup.replace('href="/static/','href="static/').replace('src="/static/','src="static/')
+ markup='\n'.join(line.rstrip() for line in markup.splitlines()).strip()+'\n'
+ (output/'index.html').write_text(markup)
+ shutil.copytree(root/'static',output/'static',dirs_exist_ok=True)
+ print(f'Interface preview exported to {output}')
+ 
++
++# Export the dedicated Elementor journey from the same production view.
++from converter.wordpress import elementor_page
++request=RequestFactory().get('/font-to-elementor-pro/',HTTP_HOST='localhost')
++markup=elementor_page(request).content.decode()
++markup=markup.replace('<body data-interface-language="en"','<body data-preview="true" data-interface-language="en"')
++markup=markup.replace('href="/static/','href="../static/').replace('src="/static/','src="../static/')
++markup='\n'.join(line.rstrip() for line in markup.splitlines()).strip()+'\n'
++(output/'elementor').mkdir(exist_ok=True)
++(output/'elementor'/'index.html').write_text(markup)
 diff --git a/static/app.css b/static/app.css
-index 8b3127b..e371679 100644
+index e371679..429ece0 100644
 --- a/static/app.css
 +++ b/static/app.css
-@@ -35,4 +35,16 @@
+@@ -48,3 +48,7 @@
+ @media(max-width:600px) { .wordpress-publish { padding:16px; } }
  
- /* Crawlable format guidance and concise answers beneath the converter. */
- .font-guide{border-top:1px solid var(--line);padding:48px 0 54px}.guide-intro{max-width:760px;margin-bottom:28px}.guide-intro h2{font-size:27px;line-height:1.3;letter-spacing:-.7px}.font-guide p{font-size:13px;color:var(--muted);line-height:1.8}.font-guide>h3{font-size:18px;margin:30px 0 16px}.format-comparison{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)}.format-comparison table{border-collapse:collapse;width:100%;text-align:left;font-size:12px}.format-comparison th,.format-comparison td{padding:14px 17px;border-bottom:1px solid var(--line);vertical-align:top}.format-comparison thead{background:var(--soft)}.format-comparison td{color:var(--muted)}.format-comparison tbody tr:last-child>*{border-bottom:0}.faq-grid{display:grid;grid-template-columns:1fr 1fr;gap:25px 38px}.faq-grid h4{font-size:14px;line-height:1.5;margin:0 0 8px}.faq-grid p{margin:0}footer.shell{flex-wrap:wrap}.developer-credit a{font-weight:600;color:var(--purple)}.developer-credit>span{color:var(--purple)}.footer-languages{display:flex;gap:14px;flex-wrap:wrap;width:100%;font-size:11px}.footer-languages a[aria-current]{color:var(--purple)}@media(max-width:760px){.faq-grid{grid-template-columns:1fr}.guide-intro h2{font-size:23px}.format-comparison th,.format-comparison td{padding:11px;font-size:11px}footer>nav:last-child{display:flex}footer .developer-credit{display:block;width:100%}}
--
-+/* WordPress publisher follows the existing result card and colour scheme. */
-+.wordpress-publish { margin:24px 0; padding:24px; border:1px solid var(--border,#d8dfdb); border-radius:16px; }
-+.wordpress-publish h3 { margin-top:0; }
-+.wordpress-publish ol { padding-left:20px; line-height:1.7; }
-+.wordpress-publish a { color:inherit; text-decoration:underline; }
-+.wordpress-publish textarea { display:block; box-sizing:border-box; width:100%; margin:8px 0 12px; padding:12px; border:1px solid var(--border,#d8dfdb); border-radius:8px; background:transparent; color:inherit; font:inherit; resize:vertical; }
-+.wordpress-license { display:flex; align-items:flex-start; gap:8px; margin:16px 0; }
-+.wordpress-license input { flex-shrink:0; margin-top:4px; }
-+.wordpress-publish .result-actions { flex-wrap:wrap; }
-+#wordpress-review, #wordpress-status { overflow-wrap:anywhere; }
-+@media(max-width:600px) { .wordpress-publish { padding:16px; } }
+ .elementor-nav{color:var(--purple,#7357df)!important;white-space:nowrap}.elementor-connect{display:grid;grid-template-columns:1.25fr 1fr;gap:60px;padding:65px 0 35px}.elementor-connect h1{font-size:64px;letter-spacing:-3px;line-height:1.08;margin:18px 0}.elementor-connect ol{padding-left:20px;line-height:1.9;color:var(--muted,#7d7c87)}.connect-card{background:var(--card,#fff);border:1px solid var(--line,#e9e8ef);border-radius:24px;padding:30px;align-self:center}.connect-card>label{display:block;margin:15px 0;font-size:13px}.connect-card input[type=url]{width:100%;padding:13px;border:1px solid var(--line,#e9e8ef);border-radius:10px;background:var(--card,#fff);color:inherit}.connect-card .primary-button{width:100%;margin:12px 0}.connect-card .muted{font-size:11px;line-height:1.7}.header nav{flex-wrap:wrap;gap:16px}@media(max-width:800px){.elementor-connect{grid-template-columns:1fr;gap:25px}.elementor-connect h1{font-size:46px}.header{flex-wrap:wrap;gap:20px}.header nav{width:100%;justify-content:space-between}}
 +
-+.elementor-nav{color:var(--purple,#7357df)!important;white-space:nowrap}.elementor-connect{display:grid;grid-template-columns:1.25fr 1fr;gap:60px;padding:65px 0 35px}.elementor-connect h1{font-size:64px;letter-spacing:-3px;line-height:1.08;margin:18px 0}.elementor-connect ol{padding-left:20px;line-height:1.9;color:var(--muted,#7d7c87)}.connect-card{background:var(--card,#fff);border:1px solid var(--line,#e9e8ef);border-radius:24px;padding:30px;align-self:center}.connect-card>label{display:block;margin:15px 0;font-size:13px}.connect-card input[type=url]{width:100%;padding:13px;border:1px solid var(--line,#e9e8ef);border-radius:10px;background:var(--card,#fff);color:inherit}.connect-card .primary-button{width:100%;margin:12px 0}.connect-card .muted{font-size:11px;line-height:1.7}.header nav{flex-wrap:wrap;gap:16px}@media(max-width:800px){.elementor-connect{grid-template-columns:1fr;gap:25px}.elementor-connect h1{font-size:46px}.header{flex-wrap:wrap;gap:20px}.header nav{width:100%;justify-content:space-between}}
++.elementor-heading{padding:48px 0 24px}.elementor-heading h1{font-size:48px;line-height:1.1;letter-spacing:-2px;margin:18px 0}.flow-steps{display:flex;gap:20px;list-style:none;padding:0;font-size:12px;color:#7357df;margin:28px 0}#website-confirmation>label{display:block;font-size:13px;margin:16px 0}#wordpress-site{width:100%;padding:14px;border:1px solid var(--line,#e9e8ef);border-radius:10px;background:var(--card,#fff);color:inherit}#elementor-publish-panel{scroll-margin-top:30px}#elementor-publish-panel>.primary-button{margin:18px 0}#elementor-manage{display:inline-block}#elementor-manage[hidden]{display:none}body[data-elementor] .font-guide .format-comparison,body[data-elementor] .font-guide>.formats-heading{display:none}@media(max-width:700px){.elementor-heading h1{font-size:34px}.flow-steps{gap:12px;flex-wrap:wrap}}
++
++body[data-elementor] .tip-card{display:none}
 diff --git a/static/app.js b/static/app.js
-index 82661de..6912ec7 100644
+index 6912ec7..c2be8d2 100644
 --- a/static/app.js
 +++ b/static/app.js
-@@ -92,6 +92,10 @@ function poll(id) {
+@@ -92,6 +92,11 @@ function poll(id) {
  }
  function showResult(job) {
    activeJob=job; $('result').hidden=false; $('result-files').replaceChildren();
-+  if($('wordpress-review')){
-+    $('wordpress-status').textContent='';
-+    $('wordpress-review').textContent=job.results.map(f=>`${f.family} · ${f.weight} · ${f.style}`).join(' / ');
++  if($('elementor-publish-link')) $('elementor-publish-link').href='/font-to-elementor-pro/?kit='+encodeURIComponent(job.id);
++  if(document.body.dataset.elementor==='true'){
++    sessionStorage.setItem('fontready.selected-kit',job.id);
++    window.dispatchEvent(new CustomEvent('fontready:kit', {detail:job}));
 +  }
-   for(const result of job.results){
-     const row=element('section',undefined,'result-row');
-     const heading=element('div',undefined,'result-font-heading');
-@@ -290,4 +294,3 @@ setInterval(()=>{if(!factsPaused&&!document.hidden&&!window.matchMedia('(prefers
- $('site-language').value=interfaceLanguage;
- $('site-language').onchange=e=>{const code=e.target.value;if(previewOnly)setLanguage(code);else location.assign(code==='en'?'/':`/${code}/`);};
- setLanguage(interfaceLanguage);
--
-diff --git a/static/owner.css b/static/owner.css
-new file mode 100644
-index 0000000..7b0fd47
---- /dev/null
-+++ b/static/owner.css
-@@ -0,0 +1 @@
-+.owner{padding:35px 0 70px}.owner header{display:flex;align-items:center;gap:24px}.owner header form{margin-left:auto}.owner h1{font-size:40px;letter-spacing:-1.5px;margin:50px 0 14px}.periods{display:flex;gap:12px;margin:25px 0}.periods a{padding:9px 14px;border-radius:9px;background:var(--card,#fff);border:1px solid var(--line,#e9e8ef);text-decoration:none}.periods a[aria-current]{background:#7357df;color:white}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:15px}.metrics article,.owner section{padding:24px;border:1px solid var(--line,#e9e8ef);border-radius:20px;background:var(--card,#fff)}.metrics strong{font-size:38px;display:block}.metrics span{font-size:12px;color:#7d7c87}.owner-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:25px 0}.owner table{width:100%;border-collapse:collapse;font-size:13px}.owner th,.owner td{text-align:left;padding:12px 5px;border-bottom:1px solid var(--line,#e9e8ef);overflow-wrap:anywhere}.owner th{color:#7d7c87;font-size:11px}.owner h2{font-size:18px;margin:0 0 18px}.login{max-width:450px}.login input{display:block;width:100%;padding:12px;border:1px solid #e9e8ef;border-radius:8px}.login label{font-size:13px}.login .errorlist{color:#9b452a}@media(max-width:750px){.metrics{grid-template-columns:1fr 1fr}.owner-grid{grid-template-columns:1fr}.owner{padding:25px 15px}.periods{flex-wrap:wrap}.owner section{overflow:auto}}
-diff --git a/static/wordpress-callback.js b/static/wordpress-callback.js
-new file mode 100644
-index 0000000..d4363e9
---- /dev/null
-+++ b/static/wordpress-callback.js
-@@ -0,0 +1,8 @@
-+/* Strip connection fragments before any third-party script loads. Never send credentials to Django. */
-+(() => {
-+  if (!location.hash.startsWith('#fontready=')) return;
-+  const value = location.hash.slice(11);
-+  history.replaceState(null, '', location.pathname + location.search);
-+  try { window.fontreadyCallback = JSON.parse(decodeURIComponent(value)); }
-+  catch { window.fontreadyCallback = {invalid: true}; }
-+})();
+   if($('wordpress-review')){
+     $('wordpress-status').textContent='';
+     $('wordpress-review').textContent=job.results.map(f=>`${f.family} · ${f.weight} · ${f.style}`).join(' / ');
+@@ -182,7 +187,7 @@ $('copy-css').onclick = ()=>copy(activeJob?.css || '', 'CSS');
+ $('copy-link').onclick = ()=>{if(activeJob?.download_url)copy(new URL(activeJob.download_url,location.origin).href, 'Download link');};
+ const instructions={css:['Extract your kit and upload the fonts/ folder alongside stylesheet.css.','Add <link rel="stylesheet" href="/path/to/stylesheet.css"> to your page.','Set font-family to the family name shown in your generated CSS.'],elementor:['Open WordPress → Elementor → Custom Fonts in an installation that supports this feature.','Add a family and upload each font file with its matching weight and style.','Select your custom family in the Typography controls, then check the published page.'],next:['Copy the converted files into your Next.js project, such as app/fonts/.','Use next/font/local with each file’s path, weight and style.','Apply the returned className to the element or layout that should use your font.']};
+ function installTab(key) {$('install-content').replaceChildren();const list=element('ol');(localizedInstructions[interfaceLanguage]?.[['css','elementor','next'].indexOf(key)] || instructions[key]).forEach(text=>list.append(element('li',text)));$('install-content').append(list);document.querySelectorAll('[data-tab]').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.tab===key)));}
+-document.querySelectorAll('[data-tab]').forEach(tab=>tab.onclick=()=>installTab(tab.dataset.tab));installTab('css');
++document.querySelectorAll('[data-tab]').forEach(tab=>tab.onclick=()=>installTab(tab.dataset.tab));if($('install-content'))installTab('css');
+ if(previewOnly){$('preview-banner').hidden=false;$('ai-help').textContent=t('Automatic Gemini information is available in the configured Django app.');}
+ 
+ let fontDetailsOpen=false;
+@@ -254,7 +259,7 @@ function setLanguage(code){
+   renderFact();
+   if(!sampleEdited)$('preview-text').value=sampleText();
+   $('characters').placeholder=t('Leave blank to keep every character');
+-  updateButton();installTab(document.querySelector('[data-tab][aria-selected="true"]').dataset.tab);
++  updateButton();if(document.querySelector('[data-tab][aria-selected="true"]'))installTab(document.querySelector('[data-tab][aria-selected="true"]').dataset.tab);
+   if(activeJob?.state==='ready')showResult(activeJob);
+   if(!previewOnly)refreshHistory();
+ }
 diff --git a/static/wordpress.js b/static/wordpress.js
-new file mode 100644
-index 0000000..578f2b7
---- /dev/null
+index 578f2b7..24e88e8 100644
+--- a/static/wordpress.js
 +++ b/static/wordpress.js
-@@ -0,0 +1,98 @@
-+/* Opaque authentication stays in this browser tab; the user never copies a key. */
-+(() => {
-+  const get = id => document.getElementById(id);
-+  const storageKey = 'fontready.website.v2';
-+  let connection = null, publishing = false;
-+  const message = (text, error = false, id = 'connection-status') => {
-+    const element = get(id) || get('wordpress-status');
-+    if (element) { element.textContent = text; element.className = error ? 'error' : ''; }
-+  };
-+  const clear = () => { connection = null; sessionStorage.removeItem(storageKey); };
-+  function endpoint(value, route, site) {
-+    const url = new URL(value), origin = new URL(site);
-+    const query = url.searchParams.get('rest_route');
-+    const queryRoute = query === `/fontready/v1/${route}` && [...url.searchParams.keys()].length === 1;
-+    const pathRoute = url.pathname.endsWith(`/wp-json/fontready/v1/${route}`) && !url.search;
-+    if (url.protocol !== 'https:' || url.origin !== origin.origin || url.username || url.password || url.hash || !(pathRoute || queryRoute)) throw new Error('WordPress returned an invalid connection endpoint.');
-+    if (queryRoute && !url.pathname.endsWith('/')) throw new Error('WordPress returned an invalid connection path.');
-+    return url.href;
+@@ -1,7 +1,7 @@
+ /* Opaque authentication stays in this browser tab; the user never copies a key. */
+ (() => {
+   const get = id => document.getElementById(id);
+-  const storageKey = 'fontready.website.v2';
++  const storageKey = 'fontready.website.v3';
+   let connection = null, publishing = false;
+   const message = (text, error = false, id = 'connection-status') => {
+     const element = get(id) || get('wordpress-status');
+@@ -28,21 +28,34 @@
+   const showConnection = () => {
+     if (connection) {
+       if (get('wordpress-site')) get('wordpress-site').value = connection.site;
+-      message(`Connected to ${new URL(connection.site).host}. Your website is ready.`);
++      message(`Publishing destination: ${new URL(connection.site).host}.`);
++      if(get('website-confirmation')) get('website-confirmation').hidden=true;
++      if(get('wordpress-disconnect'))get('wordpress-disconnect').hidden=false;
+     }
+   };
+   showConnection();
+-  if (get('wordpress-connect')) get('wordpress-connect').onclick = async () => {
+-    const button = get('wordpress-connect');
+-    if (previewOnly) return message('Connect from the running FontReady website.', true);
+-    button.disabled = true;
++  async function connectForPublish(job) {
++    if (!get('wordpress-pro').checked || !get('wordpress-plugin').checked) throw new Error('Confirm Elementor Pro and the FontReady plugin are installed and active.');
++    const site = get('wordpress-site').value.trim();
++    sessionStorage.setItem('fontready.requested-site', site);
++    sessionStorage.setItem('fontready.selected-kit', job.id);
++    sessionStorage.setItem('fontready.pending-publish', job.id);
++    const result = await api('/api/wordpress/connect/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':csrf()}, body:JSON.stringify({site, elementor_pro:true, plugin_installed:true, job:job.id})});
++    location.assign(result.url);
 +  }
-+  function validate(data, site) {
-+    if (!data || !/^[a-f0-9]{64}$/.test(data.key) || !Number.isInteger(data.expires) || data.expires * 1000 <= Date.now() || data.expires * 1000 > Date.now() + 8 * 86400000) throw new Error('Reconnect your website to FontReady.');
-+    const canonical = new URL(data.site);
-+    if (canonical.protocol !== 'https:' || canonical.origin !== new URL(site).origin || canonical.username || canonical.password || canonical.search || canonical.hash) throw new Error('The website domain does not match.');
-+    return {...data, endpoint: endpoint(data.endpoint, 'fonts', site), status: endpoint(data.status, 'connection', site)};
++  async function restoreKit() {
++    if (previewOnly || document.body.dataset.elementor !== 'true') return null;
++    const id = new URL(location.href).searchParams.get('kit') || sessionStorage.getItem('fontready.selected-kit');
++    if (!id || !/^[a-f0-9-]{36}$/.test(id)) return null;
+     try {
+-      const site = get('wordpress-site').value.trim();
+-      sessionStorage.setItem('fontready.requested-site', site);
+-      const result = await api('/api/wordpress/connect/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':csrf()}, body:JSON.stringify({site, elementor_pro:get('wordpress-pro').checked})});
+-      location.assign(result.url);
+-    } catch (error) { message(error.message, true); button.disabled = false; }
+-  };
++      const job = await api(`/api/conversions/${id}/`);
++      if (job.state !== 'ready' || new Date(job.expires_at) <= new Date()) throw new Error('Your selected fonts have expired. Convert them again below.');
++      showResult(job);
++      history.replaceState(null, '', '/font-to-elementor-pro/?kit='+encodeURIComponent(id));
++      get('result').scrollIntoView({behavior:'smooth',block:'start'});
++      return job;
++    } catch(error) { sessionStorage.removeItem('fontready.selected-kit'); sessionStorage.removeItem('fontready.pending-publish'); message(error.message,true); return null; }
 +  }
-+  try { const saved = JSON.parse(sessionStorage.getItem(storageKey) || 'null'); if (saved) connection = validate(saved, saved.site); }
-+  catch { try { clear(); } catch {} }
-+  const showConnection = () => {
-+    if (connection) {
-+      if (get('wordpress-site')) get('wordpress-site').value = connection.site;
-+      message(`Connected to ${new URL(connection.site).host}. Your website is ready.`);
-+    }
-+  };
-+  showConnection();
-+  if (get('wordpress-connect')) get('wordpress-connect').onclick = async () => {
-+    const button = get('wordpress-connect');
-+    if (previewOnly) return message('Connect from the running FontReady website.', true);
-+    button.disabled = true;
-+    try {
-+      const site = get('wordpress-site').value.trim();
-+      sessionStorage.setItem('fontready.requested-site', site);
-+      const result = await api('/api/wordpress/connect/', {method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken':csrf()}, body:JSON.stringify({site, elementor_pro:get('wordpress-pro').checked})});
-+      location.assign(result.url);
-+    } catch (error) { message(error.message, true); button.disabled = false; }
-+  };
-+  const callback = window.fontreadyCallback;
-+  delete window.fontreadyCallback;
-+  if (callback) (async () => {
-+    try {
-+      clear();
-+      const requested = sessionStorage.getItem('fontready.requested-site');
-+      if (!requested || !/^[a-f0-9]{64}$/.test(callback.state)) throw new Error('Start your connection from FontReady again.');
-+      const candidate = validate(callback, requested);
-+      const response = await fetch(candidate.status, {credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${candidate.key}`}});
-+      if (!response.ok) throw new Error('WordPress could not confirm your connection. Check Elementor Pro and reconnect.');
-+      const status = await response.json();
-+      if (status.elementor_pro !== true || new URL(status.site).href !== new URL(candidate.site).href) throw new Error('WordPress could not confirm this website.');
-+      await api('/api/wordpress/complete/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({state:callback.state,requested_site:requested,site:status.site,families:status.families,variants:status.variants})});
-+      delete candidate.state;
-+      connection = candidate;
-+      sessionStorage.setItem(storageKey, JSON.stringify(candidate));
-+      sessionStorage.removeItem('fontready.requested-site');
-+      showConnection();
-+    } catch (error) { message(error.message, true); }
-+  })();
-+  if (get('wordpress-disconnect')) get('wordpress-disconnect').onclick = () => {
-+    if (publishing) return;
-+    clear(); message('Disconnected from this browser. You can disconnect all access in WordPress → FontReady.');
-+  };
-+  const publish = get('wordpress-publish');
-+  if (!publish) return;
-+  publish.onclick = async () => {
-+    if (publishing) return;
-+    const status = (text, error=false) => message(text,error,'wordpress-status');
-+    if (previewOnly) return status('Publishing is available in the running FontReady application.',true);
-+    if (!connection) return status('Connect your website from “Font to Elementor Pro” in the top menu.',true);
-+    const job = activeJob;
-+    if (!job || job.state !== 'ready' || new Date(job.expires_at) <= new Date()) return status('Convert your fonts again; this kit is unavailable.',true);
-+    publishing = true; publish.disabled = true;
-+    try {
-+      connection = validate(connection, connection.site);
-+      const host = new URL(connection.site).host;
-+      status(`Installing fonts on ${host}…`);
-+      const payload = await api(`/api/conversions/${job.id}/wordpress/`, {method:'POST',headers:{'X-CSRFToken':csrf()},signal:AbortSignal.timeout(120000)});
-+      if (activeJob?.id !== job.id) throw new Error('The active kit changed. Review it and install again.');
-+      const response = await fetch(connection.endpoint,{method:'POST',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${connection.key}`},body:JSON.stringify(payload)});
-+      const data = await response.json().catch(()=>null);
-+      if (!response.ok) {
-+        if (response.status === 401) clear();
-+        throw new Error(data?.message || `WordPress returned ${response.status}. Check your website and try again.`);
-+      }
-+      if (!Array.isArray(data?.families) || !Number.isInteger(data?.imported)) throw new Error('Check WordPress → FontReady to confirm the installation before retrying.');
-+      status(`Installed on ${host}: ${data.families.join(', ')}. Refresh Elementor and select your font under FontReady.`);
-+      api(`/api/conversions/${job.id}/published/`,{method:'POST',headers:{'X-CSRFToken':csrf()}}).catch(()=>{});
-+    } catch (error) { status(error.message || 'Check WordPress → FontReady before retrying.',true); }
-+    finally { publishing=false; publish.disabled=false; }
-+  };
-+})();
+   const callback = window.fontreadyCallback;
+   delete window.fontreadyCallback;
+   if (callback) (async () => {
+@@ -54,18 +67,22 @@
+       const response = await fetch(candidate.status, {credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${candidate.key}`}});
+       if (!response.ok) throw new Error('WordPress could not confirm your connection. Check Elementor Pro and reconnect.');
+       const status = await response.json();
++      if (status.native_custom_fonts !== true) throw new Error('Update the FontReady plugin to version 0.3.0 before publishing to Elementor Custom Fonts.');
+       if (status.elementor_pro !== true || new URL(status.site).href !== new URL(candidate.site).href) throw new Error('WordPress could not confirm this website.');
+-      await api('/api/wordpress/complete/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({state:callback.state,requested_site:requested,site:status.site,families:status.families,variants:status.variants})});
++      const paired = await api('/api/wordpress/complete/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({state:callback.state,requested_site:requested,site:status.site,families:status.families,variants:status.variants})});
+       delete candidate.state;
+       connection = candidate;
+       sessionStorage.setItem(storageKey, JSON.stringify(candidate));
+       sessionStorage.removeItem('fontready.requested-site');
+       showConnection();
+-    } catch (error) { message(error.message, true); }
++      const job = await restoreKit();
++      if (job && paired.job === job.id && sessionStorage.getItem('fontready.pending-publish') === job.id) { sessionStorage.removeItem('fontready.pending-publish'); await publish.onclick(); }
++    } catch (error) { await restoreKit(); message(error.message, true); }
+   })();
++  else restoreKit();
+   if (get('wordpress-disconnect')) get('wordpress-disconnect').onclick = () => {
+     if (publishing) return;
+-    clear(); message('Disconnected from this browser. You can disconnect all access in WordPress → FontReady.');
++    clear(); if(get('website-confirmation'))get('website-confirmation').hidden=false; if(get('elementor-manage'))get('elementor-manage').hidden=true; message('Disconnected from this browser. You can disconnect all access in WordPress → FontReady.');
+   };
+   const publish = get('wordpress-publish');
+   if (!publish) return;
+@@ -73,12 +90,16 @@
+     if (publishing) return;
+     const status = (text, error=false) => message(text,error,'wordpress-status');
+     if (previewOnly) return status('Publishing is available in the running FontReady application.',true);
+-    if (!connection) return status('Connect your website from “Font to Elementor Pro” in the top menu.',true);
+     const job = activeJob;
+     if (!job || job.state !== 'ready' || new Date(job.expires_at) <= new Date()) return status('Convert your fonts again; this kit is unavailable.',true);
+     publishing = true; publish.disabled = true;
+     try {
++      if (!connection) { await connectForPublish(job); return; }
+       connection = validate(connection, connection.site);
++      const probe = await fetch(connection.status,{credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${connection.key}`}});
++      const capability = await probe.json().catch(()=>null);
++      if (!probe.ok) { if(probe.status===401)clear(); throw new Error(capability?.message || 'Reconnect your WordPress website.'); }
++      if (capability?.native_custom_fonts !== true || capability?.elementor_pro !== true) throw new Error('Custom Fonts publishing is unavailable. Update FontReady and check Elementor Pro before publishing.');
+       const host = new URL(connection.site).host;
+       status(`Installing fonts on ${host}…`);
+       const payload = await api(`/api/conversions/${job.id}/wordpress/`, {method:'POST',headers:{'X-CSRFToken':csrf()},signal:AbortSignal.timeout(120000)});
+@@ -90,7 +111,8 @@
+         throw new Error(data?.message || `WordPress returned ${response.status}. Check your website and try again.`);
+       }
+       if (!Array.isArray(data?.families) || !Number.isInteger(data?.imported)) throw new Error('Check WordPress → FontReady to confirm the installation before retrying.');
+-      status(`Installed on ${host}: ${data.families.join(', ')}. Refresh Elementor and select your font under FontReady.`);
++      status(`Published to Elementor Custom Fonts on ${host}: ${data.families.join(', ')}. Refresh the Elementor editor to use them.`);
++      if (get('elementor-manage') && data.manage_url) { const url = new URL(data.manage_url); if(url.origin === new URL(connection.site).origin && url.protocol==='https:') { get('elementor-manage').href=url.href;get('elementor-manage').hidden=false; } }
+       api(`/api/conversions/${job.id}/published/`,{method:'POST',headers:{'X-CSRFToken':csrf()}}).catch(()=>{});
+     } catch (error) { status(error.message || 'Check WordPress → FontReady before retrying.',true); }
+     finally { publishing=false; publish.disabled=false; }
 diff --git a/templates/index.html b/templates/index.html
-index 2ea31a5..86ad04a 100644
+index 86ad04a..9cad54c 100644
 --- a/templates/index.html
 +++ b/templates/index.html
-@@ -4,11 +4,12 @@
- <html lang="{{ language }}">
- <head>
-   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-+  <script src="{% static 'wordpress-callback.js' %}"></script>
-   <meta name="description" content="{{ seo.description }}">
-   <title>{{ seo.title }}</title>
-   <link rel="canonical" href="{{ canonical }}">
-   {% for alternate in languages %}<link rel="alternate" hreflang="{{ alternate.code }}" href="{{ alternate.url }}">{% endfor %}
--  <link rel="alternate" hreflang="x-default" href="https://fontready.com/">
-+  <link rel="alternate" hreflang="x-default" href="{% if elementor_page %}{{ canonical }}{% else %}https://fontready.com/{% endif %}">
-   <meta name="robots" content="{% if indexable %}index,follow,max-image-preview:large{% else %}noindex,nofollow,noarchive{% endif %}">
-   <meta property="og:type" content="website"><meta property="og:site_name" content="FontReady">
-   <meta property="og:title" content="{{ seo.title }}"><meta property="og:description" content="{{ seo.description }}"><meta property="og:url" content="{{ canonical }}">
-@@ -20,14 +21,21 @@
-   <link rel="stylesheet" href="{% static 'app.css' %}">
-   <script src="{% static 'i18n.js' %}" defer></script>
+@@ -23,7 +23,7 @@
    <script src="{% static 'app.js' %}" defer></script>
-+  <script src="{% static 'wordpress.js' %}" defer></script>
+   <script src="{% static 'wordpress.js' %}" defer></script>
  </head>
- <body data-interface-language="{{ language }}">
+-<body data-interface-language="{{ language }}">
++<body data-interface-language="{{ language }}"{% if elementor_page %} data-elementor="true"{% endif %}>
    <div class="preview-banner" id="preview-banner" hidden data-i18n="Interface preview · Files stay in your browser here. Run the Django app for real conversion and downloads.">Interface preview · Files stay in your browser here. Run the Django app for real conversion and downloads.</div>
    <header class="header shell">
      <a class="brand" href="/" aria-label="FontReady home"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="M11 29V11h16v5H16v4h8v5h-8v4Z" fill="currentColor"/><path d="m24 29 3 3 7-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-name">Font<span>Ready</span></span><span class="beta">BETA</span></a>
--    <nav aria-label="Main navigation"><a href="#workspace" data-i18n="Converter">Converter</a><a href="#installation" data-i18n="How to use">How to use</a><label class="language-control"><span class="sr-only" data-i18n="Language">Language</span><select id="site-language" aria-label="Language"><option value="en">English</option><option value="es">Español</option><option value="ru">Русский</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt">Português</option></select></label><button id="theme" class="icon-button" aria-label="Toggle dark mode">◐</button></nav>
-+    <nav aria-label="Main navigation"><a href="#workspace" data-i18n="Converter">Converter</a><a class="elementor-nav" href="/font-to-elementor-pro/">Font to Elementor Pro ↗</a><a href="#installation" data-i18n="How to use">How to use</a><label class="language-control"><span class="sr-only" data-i18n="Language">Language</span><select id="site-language" aria-label="Language"><option value="en">English</option><option value="es">Español</option><option value="ru">Русский</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt">Português</option></select></label><button id="theme" class="icon-button" aria-label="Toggle dark mode">◐</button></nav>
+@@ -31,11 +31,8 @@
    </header>
    <main class="shell">
-+    {% if elementor_page %}
-+    <section class="elementor-connect" id="elementor-connection" data-clarity-mask="true">
-+      <div><p class="eyebrow">FONTREADY FOR ELEMENTOR PRO</p><h1>Your fonts.<br>In Elementor.</h1><p>Convert here. Install on your website. Keep designing.</p><ol><li><a href="/wordpress-plugin/">Download the FontReady plugin</a>, install and activate it on your website.</li><li>Confirm Elementor Pro and your domain below. Sign in to WordPress to connect.</li><li>Convert your fonts, then choose Install fonts. Refresh Elementor and select your family under FontReady.</li></ol></div>
-+      <div class="connect-card"><h2>Connect your website</h2><label for="wordpress-site">Website URL</label><input id="wordpress-site" type="url" placeholder="https://yourwebsite.com" autocomplete="url"><label class="wordpress-license"><input id="wordpress-pro" type="checkbox"> I confirm Elementor Pro is installed on this website.</label><button id="wordpress-connect" class="primary-button" type="button">Continue to WordPress ↗</button><p id="connection-status" role="status" aria-live="polite"></p><button id="wordpress-disconnect" class="text-button" type="button">Disconnect this browser</button><p class="muted">Connecting shares your domain and font installation totals with FontReady. No account needed. <a href="/privacy/">Privacy details</a>.</p></div>
-+    </section>
-+    {% endif %}
+     {% if elementor_page %}
+-    <section class="elementor-connect" id="elementor-connection" data-clarity-mask="true">
+-      <div><p class="eyebrow">FONTREADY FOR ELEMENTOR PRO</p><h1>Your fonts.<br>In Elementor.</h1><p>Convert here. Install on your website. Keep designing.</p><ol><li><a href="/wordpress-plugin/">Download the FontReady plugin</a>, install and activate it on your website.</li><li>Confirm Elementor Pro and your domain below. Sign in to WordPress to connect.</li><li>Convert your fonts, then choose Install fonts. Refresh Elementor and select your family under FontReady.</li></ol></div>
+-      <div class="connect-card"><h2>Connect your website</h2><label for="wordpress-site">Website URL</label><input id="wordpress-site" type="url" placeholder="https://yourwebsite.com" autocomplete="url"><label class="wordpress-license"><input id="wordpress-pro" type="checkbox"> I confirm Elementor Pro is installed on this website.</label><button id="wordpress-connect" class="primary-button" type="button">Continue to WordPress ↗</button><p id="connection-status" role="status" aria-live="polite"></p><button id="wordpress-disconnect" class="text-button" type="button">Disconnect this browser</button><p class="muted">Connecting shares your domain and font installation totals with FontReady. No account needed. <a href="/privacy/">Privacy details</a>.</p></div>
+-    </section>
+-    {% endif %}
++    <section class="elementor-heading"><p class="eyebrow">FONTREADY FOR ELEMENTOR PRO</p><h1>Convert. Publish. Keep designing.</h1><p>Turn your fonts into web-ready files and publish them to Elementor’s Custom Fonts.</p><ol class="flow-steps"><li>1 · Convert your fonts</li><li>2 · Confirm your website</li><li>3 · Publish to Custom Fonts</li></ol></section>
++    {% else %}
      <section class="hero">
        <div class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span> <span data-i18n="A SMALL TOOL FOR BETTER TYPOGRAPHY">A SMALL TOOL FOR BETTER TYPOGRAPHY</span></div>
        <h1><span class="hero-first" data-i18n="Your fonts.">Your fonts.</span><br><span data-i18n="Ready for the web.">Ready for the web.</span></h1>
-@@ -79,6 +87,13 @@ everything feel different.</textarea>
+@@ -43,6 +40,7 @@
+       <div class="hero-notes"><span data-i18n="↗ WOFF2 · WOFF · TTF · OTF · SVG">↗ WOFF2 · WOFF · TTF · OTF · SVG</span><span data-i18n="⌁ Batch conversion">⌁ Batch conversion</span><span data-i18n="◷ 24-minute downloads">◷ 24-minute downloads</span></div>
+       <div class="type-art" aria-hidden="true"><span class="art-small">Aa</span><span class="art-large">Aa</span><span class="art-chip">.otf <b>→</b> .woff2</span><span class="art-dot">✳</span></div>
+     </section>
++    {% endif %}
+     <div class="workspace" id="workspace" data-clarity-mask="true">
+       <div class="main-column">
+         <div class="upload-preview" id="upload-preview">
+@@ -72,7 +70,7 @@ everything feel different.</textarea>
+             <label class="format"><input type="checkbox" name="format" value="woff"><span><b>WOFF</b><small data-i18n="Web font">Web font</small></span></label>
+             <label class="format"><input type="checkbox" name="format" value="ttf"><span><b>TTF</b><small data-i18n="TrueType outlines">TrueType outlines</small></span></label>
+             <label class="format"><input type="checkbox" name="format" value="otf"><span><b>OTF</b><small data-i18n="CFF outlines">CFF outlines</small></span></label>
+-            <label class="format"><input type="checkbox" name="format" value="svg"><span><b>SVG</b><small data-i18n="Legacy font">Legacy font</small></span></label>
++            {% if not elementor_page %}<label class="format"><input type="checkbox" name="format" value="svg"><span><b>SVG</b><small data-i18n="Legacy font">Legacy font</small></span></label>{% endif %}
+           </div><p class="muted" data-i18n="Static fonts support TTF and OTF outline conversion. Variable fonts keep native outlines. SVG is for legacy tools.">Static fonts support TTF and OTF outline conversion. Variable fonts keep native outlines. SVG is for legacy tools.</p></fieldset>
+           <div class="settings-bottom">
+             <div class="display-setting"><label class="field-label" for="font-display" data-i18n="Font loading behaviour">Font loading behaviour</label><select id="font-display"><option value="swap" data-i18n="Swap — show text while loading">Swap — show text while loading</option><option value="optional" data-i18n="Optional">Optional</option><option value="fallback" data-i18n="Fallback">Fallback</option><option value="block" data-i18n="Block">Block</option><option value="auto" data-i18n="Auto">Auto</option></select><p class="muted" data-i18n="Controls how text appears while a web font loads.">Controls how text appears while a web font loads.</p></div>
+@@ -87,13 +85,26 @@ everything feel different.</textarea>
            <div id="result-files"></div>
            <div class="result-actions"><a id="download" class="primary-button" href="#" data-i18n="Download kit ↓">Download kit ↓</a><button id="copy-link" class="secondary-button" data-i18n="Copy download link">Copy download link</button></div>
            <p class="muted" data-i18n="Includes fonts, stylesheet.css, preview.html and README.txt.">Includes fonts, stylesheet.css, preview.html and README.txt.</p>
-+          <section class="wordpress-publish" aria-labelledby="wordpress-title" data-clarity-mask="true">
-+            <h3 id="wordpress-title">Install in Elementor Pro</h3>
-+            <p>Your connected website is ready. Review your fonts, then install them in one click.</p>
-+            <p id="wordpress-review" class="muted"></p>
-+            <div class="result-actions"><button id="wordpress-publish" class="secondary-button" type="button">Install fonts ↗</button></div>
-+            <p id="wordpress-status" role="status" aria-live="polite"></p>
-+          </section>
+-          <section class="wordpress-publish" aria-labelledby="wordpress-title" data-clarity-mask="true">
+-            <h3 id="wordpress-title">Install in Elementor Pro</h3>
+-            <p>Your connected website is ready. Review your fonts, then install them in one click.</p>
++          {% if elementor_page %}
++          <section class="wordpress-publish" id="elementor-publish-panel" aria-labelledby="wordpress-title" data-clarity-mask="true">
++            <h3 id="wordpress-title">Publish to your Elementor Pro website</h3>
+             <p id="wordpress-review" class="muted"></p>
+-            <div class="result-actions"><button id="wordpress-publish" class="secondary-button" type="button">Install fonts ↗</button></div>
++            <div id="website-confirmation">
++              <label for="wordpress-site">Website URL</label><input id="wordpress-site" type="url" placeholder="https://yourwebsite.com" autocomplete="url">
++              <label class="wordpress-license"><input id="wordpress-pro" type="checkbox"> Elementor Pro is installed and active.</label>
++              <label class="wordpress-license"><input id="wordpress-plugin" type="checkbox"> FontReady is installed and active. <a href="/wordpress-plugin/">Download the plugin ↓</a></label>
++              <p class="muted">Install the plugin in WordPress → Plugins → Add New → Upload Plugin, then activate it. Your converted fonts stay here while you do this.</p>
++            </div>
++            <p id="connection-status" role="status" aria-live="polite"></p>
++            <button id="wordpress-publish" class="primary-button" type="button">Publish to Elementor Pro website ↗</button>
++            <button id="wordpress-disconnect" class="text-button" type="button" hidden>Use another website</button>
+             <p id="wordpress-status" role="status" aria-live="polite"></p>
++            <a id="elementor-manage" class="secondary-button" hidden target="_blank" rel="noopener noreferrer">Open Elementor Custom Fonts ↗</a>
++            <p class="muted">You’ll approve through your WordPress administrator account. Connecting shares your domain and installation totals. <a href="/privacy/">Privacy details</a>.</p>
+           </section>
++          {% else %}
++          <a id="elementor-publish-link" class="secondary-button" href="/font-to-elementor-pro/">Publish to Elementor Pro website ↗</a>
++          {% endif %}
            <div class="font-info-heading"><h3 data-i18n="About your fonts">About your fonts</h3><div class="font-info-actions"><button id="toggle-font-details" class="text-button" type="button" aria-expanded="false" aria-controls="font-info" data-i18n="Show details">Show details</button><a id="info-download" class="text-button" href="#" data-i18n="Information JSON ↓">Information JSON ↓</a></div></div><p class="muted" id="research-status"></p><div id="font-info"></div><div class="code-heading"><b data-i18n="Your @font-face CSS">Your @font-face CSS</b><button class="text-button" id="copy-css" data-i18n="Copy CSS">Copy CSS</button></div><pre id="css-code"></pre>
          </section>
        </div>
-@@ -95,8 +110,7 @@ everything feel different.</textarea>
-       <h3 id="questions">{{ seo.faq_heading }}</h3><div class="faq-grid">{% for question, answer in seo.faqs %}<article><h4>{{ question }}</h4><p>{{ answer }}</p></article>{% endfor %}</div>
+@@ -102,12 +113,13 @@ everything feel different.</textarea>
+         <section class="tip-card" id="font-facts" aria-label="Font facts"><span class="tip-label" data-i18n="FONT FACTS">FONT FACTS</span><h3 id="fact-title"></h3><p id="fact-body"></p><div class="fact-controls"><div><button id="fact-previous" type="button" aria-label="Previous font fact">←</button><button id="fact-next" type="button" aria-label="Next font fact">→</button></div></div><span class="tip-symbol" aria-hidden="true">Aa↗</span></section>
+       </aside>
+     </div>
+-    <section class="installation" id="installation"><div><div class="eyebrow" data-i18n="FROM DOWNLOAD TO WEBSITE">FROM DOWNLOAD TO WEBSITE</div><h2 data-i18n="Put your fonts to work.">Put your fonts to work.</h2><p data-i18n="Download the kit. Choose your platform. Bring your typography to life.">Download the kit. Choose your platform. Bring your typography to life.</p></div><div class="install-card"><div class="tabs" role="tablist" aria-label="Installation platform"><button role="tab" aria-selected="true" data-tab="css" data-i18n="HTML / CSS">HTML / CSS</button><button role="tab" aria-selected="false" data-tab="elementor" data-i18n="Elementor">Elementor</button><button role="tab" aria-selected="false" data-tab="next" data-i18n="Next.js">Next.js</button></div><div id="install-content" role="tabpanel"></div></div></section>
++    {% if not elementor_page %}<section class="installation" id="installation"><div><div class="eyebrow" data-i18n="FROM DOWNLOAD TO WEBSITE">FROM DOWNLOAD TO WEBSITE</div><h2 data-i18n="Put your fonts to work.">Put your fonts to work.</h2><p data-i18n="Download the kit. Choose your platform. Bring your typography to life.">Download the kit. Choose your platform. Bring your typography to life.</p></div><div class="install-card"><div class="tabs" role="tablist" aria-label="Installation platform"><button role="tab" aria-selected="true" data-tab="css" data-i18n="HTML / CSS">HTML / CSS</button><button role="tab" aria-selected="false" data-tab="elementor" data-i18n="Elementor">Elementor</button><button role="tab" aria-selected="false" data-tab="next" data-i18n="Next.js">Next.js</button></div><div id="install-content" role="tabpanel"></div></div></section>
++    {% endif %}
+     <section class="font-guide" id="font-guide" aria-labelledby="guide-title">
+       <div class="guide-intro"><h2 id="guide-title">{{ seo.heading }}</h2><p>{{ seo.intro }}</p></div>
+-      <h3>{{ seo.formats_heading }}</h3>
++      {% if not elementor_page %}<h3>{{ seo.formats_heading }}</h3>
+       <div class="format-comparison"><table><thead><tr><th scope="col">{{ seo.format_label }}</th><th scope="col">{{ seo.use_label }}</th><th scope="col">{{ seo.notes_label }}</th></tr></thead><tbody>{% for row in seo.formats %}<tr>{% for cell in row %}{% if forloop.first %}<th scope="row">{{ cell }}</th>{% else %}<td>{{ cell }}</td>{% endif %}{% endfor %}</tr>{% endfor %}</tbody></table></div>
+-      <h3 id="questions">{{ seo.faq_heading }}</h3><div class="faq-grid">{% for question, answer in seo.faqs %}<article><h4>{{ question }}</h4><p>{{ answer }}</p></article>{% endfor %}</div>
++      {% endif %}<h3 id="questions">{{ seo.faq_heading }}</h3><div class="faq-grid">{% for question, answer in seo.faqs %}<article><h4>{{ question }}</h4><p>{{ answer }}</p></article>{% endfor %}</div>
      </section>
    </main>
--  <footer class="shell"><a class="brand" href="/">FontReady<span class="brand-footer-dot">.</span></a><span class="developer-credit">{{ seo.credit }} <span aria-hidden="true">♡</span> <a id="developer-credit" href="{{ developer_url }}" rel="noopener" target="_blank">Ademola Alabi</a></span><nav class="footer-languages" aria-label="{{ seo.languages }}">{% for alternate in languages %}<a href="{{ alternate.path }}" lang="{{ alternate.code }}" hreflang="{{ alternate.code }}" {% if alternate.code == language %}aria-current="page"{% endif %}>{{ alternate.name }}</a>{% endfor %}</nav></footer>
-+  <footer class="shell"><a href="/privacy/">Privacy</a><a class="brand" href="/">FontReady<span class="brand-footer-dot">.</span></a><span class="developer-credit">{{ seo.credit }} <span aria-hidden="true">♡</span> <a id="developer-credit" href="{{ developer_url }}" rel="noopener" target="_blank">Ademola Alabi</a></span><nav class="footer-languages" aria-label="{{ seo.languages }}">{% for alternate in languages %}<a href="{{ alternate.path }}" lang="{{ alternate.code }}" hreflang="{{ alternate.code }}" {% if alternate.code == language %}aria-current="page"{% endif %}>{{ alternate.name }}</a>{% endfor %}</nav></footer>
- </body>
- </html>
- {% endlocalized_page %}
--
-diff --git a/templates/owner/dashboard.html b/templates/owner/dashboard.html
-new file mode 100644
-index 0000000..9ce5897
---- /dev/null
-+++ b/templates/owner/dashboard.html
-@@ -0,0 +1 @@
-+{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>FontReady · Owner dashboard</title><link rel="stylesheet" href="{% static 'app.css' %}"><link rel="stylesheet" href="{% static 'owner.css' %}"></head><body><main class="shell owner"><header><a class="brand" href="/">FontReady<span>.</span></a><span>Owner dashboard</span><form action="/owner/logout/" method="post">{% csrf_token %}<button class="text-button">Sign out</button></form></header><h1>Your fonts, in numbers.</h1><p class="muted">Successful conversions recorded on the server. Daily totals use Lagos time.</p><nav class="periods"><a href="?period=week" {% if period == 'week' %}aria-current="page"{% endif %}>Last 7 days</a><a href="?period=month" {% if period == 'month' %}aria-current="page"{% endif %}>Last 30 days</a><a href="?period=year" {% if period == 'year' %}aria-current="page"{% endif %}>Last 365 days</a></nav><div class="metrics"><article><strong>{{ total }}</strong><span>Completed conversions</span></article><article><strong>{{ faces }}</strong><span>Font variants converted</span></article><article><strong>{{ site_count }}</strong><span>Connected domains · all time</span></article><article><strong>{{ publishes }}</strong><span>Reported installations</span></article></div><div class="owner-grid"><section><h2>Daily conversions</h2><table><thead><tr><th>Date</th><th>Completed batches</th></tr></thead><tbody>{% for row in daily %}<tr><td>{{ row.day|date:'M j, Y' }}</td><td>{{ row.total }}</td></tr>{% empty %}<tr><td colspan="2">No conversions recorded yet.</td></tr>{% endfor %}</tbody></table></section><section><h2>Top fonts · {{ period }}</h2><p class="muted">Counts converted variants, including repeat conversions.</p><table><thead><tr><th>Font family</th><th>Variants converted</th></tr></thead><tbody>{% for family, count in top %}<tr><td>{{ family }}</td><td>{{ count }}</td></tr>{% empty %}<tr><td colspan="2">Your top fonts will appear here.</td></tr>{% endfor %}</tbody></table></section></div><section><h2>Elementor site connections</h2><p class="muted">Browser-reported after WordPress authentication. Shows up to 100 recent domains. These are historical connections, not a live check of plugin status. Font counts are snapshots at connection time.</p><table><thead><tr><th>Website</th><th>Fonts / variants</th><th>First connected</th><th>Last activity</th></tr></thead><tbody>{% for site in sites %}<tr><td>{{ site.site }}</td><td>{{ site.families }} / {{ site.variants }}</td><td>{{ site.first_seen|date:'M j, Y' }}</td><td>{{ site.last_seen|date:'M j, Y H:i' }}</td></tr>{% empty %}<tr><td colspan="4">No websites connected yet.</td></tr>{% endfor %}</tbody></table></section><p class="muted">Statistics begin with this release. Expiring conversion files are deleted independently of these counts. No visitor IP addresses, connection secrets or font files are stored in this dashboard.</p></main></body></html>
-diff --git a/templates/owner/login.html b/templates/owner/login.html
-new file mode 100644
-index 0000000..3e442eb
---- /dev/null
-+++ b/templates/owner/login.html
-@@ -0,0 +1 @@
-+{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>FontReady · Owner sign in</title><link rel="stylesheet" href="{% static 'app.css' %}"><link rel="stylesheet" href="{% static 'owner.css' %}"></head><body><main class="shell owner login"><a class="brand" href="/">FontReady<span>.</span></a><h1>Owner sign in</h1><p class="muted">Private conversion and website statistics.</p><form method="post">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button class="primary-button">Sign in</button></form></main></body></html>
+   <footer class="shell"><a href="/privacy/">Privacy</a><a class="brand" href="/">FontReady<span class="brand-footer-dot">.</span></a><span class="developer-credit">{{ seo.credit }} <span aria-hidden="true">♡</span> <a id="developer-credit" href="{{ developer_url }}" rel="noopener" target="_blank">Ademola Alabi</a></span><nav class="footer-languages" aria-label="{{ seo.languages }}">{% for alternate in languages %}<a href="{{ alternate.path }}" lang="{{ alternate.code }}" hreflang="{{ alternate.code }}" {% if alternate.code == language %}aria-current="page"{% endif %}>{{ alternate.name }}</a>{% endfor %}</nav></footer>
 diff --git a/templates/privacy.html b/templates/privacy.html
-new file mode 100644
-index 0000000..8af1511
---- /dev/null
+index 8af1511..a524521 100644
+--- a/templates/privacy.html
 +++ b/templates/privacy.html
-@@ -0,0 +1 @@
-+{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FontReady · Privacy and service details</title><link rel="canonical" href="https://fontready.com/privacy/"><link rel="stylesheet" href="{% static 'app.css' %}"></head><body><main class="shell" style="max-width:760px;padding:50px 20px"><a class="brand" href="/">FontReady<span>.</span></a><h1>Privacy & service details</h1><p>FontReady converts uploaded fonts on its servers. Download kits expire after 24 minutes. Original uploads are removed after conversion; expired outputs are cleaned up by the background maintenance service.</p><h2>Conversion statistics</h2><p>We retain conversion dates, font family names, variant counts and output format names to understand usage. These aggregate records survive file deletion. They contain no font files, visitor IP addresses, or browser session identifiers.</p><h2>Connecting WordPress</h2><p>Installing and activating the plugin enables font installation on your website. Connection requires your WordPress administrator account, HTTPS and Elementor Pro. At connection, you confirm your domain and agree to share the domain, installed font totals and successful installation reports with FontReady. The plugin performs no automatic tracking on activation.</p><p>Authentication credentials stay in your browser tab's session storage and your WordPress site stores their hash. FontReady's server never receives the credential. Connections expire after seven days and can be revoked in WordPress → FontReady. Font files are sent directly from your browser to your WordPress site; nothing is sent to Elementor's servers.</p><p>Browser-reported connection and installation statistics include the website domain and activity dates. Disconnecting does not erase historical counts. For a domain record deletion request, contact the site operator through <a href="https://ademolaalabi.com/">Ademola Alabi's website</a>.</p><h2>Website analytics</h2><p>The public website uses Google Analytics and Microsoft Clarity to understand website usage. The connection form is masked for Clarity. Private owner pages load neither service. Connection fragments are removed before analytics scripts load.</p><h2>Your installed fonts</h2><p>Installed fonts are served locally from WordPress uploads/fontready. Families appear in Elementor's FontReady group; the plugin does not create entries in Elementor Pro's native Custom Fonts manager. Deactivation stops loading the fonts but keeps their files for reactivation. Fonts must be licensed for use on your website.</p><p>FontReady is an independent tool and is not affiliated with or endorsed by Elementor.</p></main></body></html>
+@@ -1 +1 @@
+-{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FontReady · Privacy and service details</title><link rel="canonical" href="https://fontready.com/privacy/"><link rel="stylesheet" href="{% static 'app.css' %}"></head><body><main class="shell" style="max-width:760px;padding:50px 20px"><a class="brand" href="/">FontReady<span>.</span></a><h1>Privacy & service details</h1><p>FontReady converts uploaded fonts on its servers. Download kits expire after 24 minutes. Original uploads are removed after conversion; expired outputs are cleaned up by the background maintenance service.</p><h2>Conversion statistics</h2><p>We retain conversion dates, font family names, variant counts and output format names to understand usage. These aggregate records survive file deletion. They contain no font files, visitor IP addresses, or browser session identifiers.</p><h2>Connecting WordPress</h2><p>Installing and activating the plugin enables font installation on your website. Connection requires your WordPress administrator account, HTTPS and Elementor Pro. At connection, you confirm your domain and agree to share the domain, installed font totals and successful installation reports with FontReady. The plugin performs no automatic tracking on activation.</p><p>Authentication credentials stay in your browser tab's session storage and your WordPress site stores their hash. FontReady's server never receives the credential. Connections expire after seven days and can be revoked in WordPress → FontReady. Font files are sent directly from your browser to your WordPress site; nothing is sent to Elementor's servers.</p><p>Browser-reported connection and installation statistics include the website domain and activity dates. Disconnecting does not erase historical counts. For a domain record deletion request, contact the site operator through <a href="https://ademolaalabi.com/">Ademola Alabi's website</a>.</p><h2>Website analytics</h2><p>The public website uses Google Analytics and Microsoft Clarity to understand website usage. The connection form is masked for Clarity. Private owner pages load neither service. Connection fragments are removed before analytics scripts load.</p><h2>Your installed fonts</h2><p>Installed fonts are served locally from WordPress uploads/fontready. Families appear in Elementor's FontReady group; the plugin does not create entries in Elementor Pro's native Custom Fonts manager. Deactivation stops loading the fonts but keeps their files for reactivation. Fonts must be licensed for use on your website.</p><p>FontReady is an independent tool and is not affiliated with or endorsed by Elementor.</p></main></body></html>
++{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FontReady · Privacy and service details</title><link rel="canonical" href="https://fontready.com/privacy/"><link rel="stylesheet" href="{% static 'app.css' %}"></head><body><main class="shell" style="max-width:760px;padding:50px 20px"><a class="brand" href="/">FontReady<span>.</span></a><h1>Privacy & service details</h1><p>FontReady converts uploaded fonts on its servers. Download kits expire after 24 minutes. Original uploads are removed after conversion; expired outputs are cleaned up by the background maintenance service.</p><h2>Conversion statistics</h2><p>We retain conversion dates, font family names, variant counts and output format names to understand usage. These aggregate records survive file deletion. They contain no font files, visitor IP addresses, or browser session identifiers.</p><h2>Connecting WordPress</h2><p>Installing and activating the plugin enables font installation on your website. Connection requires your WordPress administrator account, HTTPS and Elementor Pro. At connection, you confirm your domain and agree to share the domain, installed font totals and successful installation reports with FontReady. The plugin performs no automatic tracking on activation.</p><p>Authentication credentials stay in your browser tab's session storage and your WordPress site stores their hash. FontReady's server never receives the credential. Connections expire after seven days and can be revoked in WordPress → FontReady. Font files are sent directly from your browser to your WordPress site; nothing is sent to Elementor's servers.</p><p>Browser-reported connection and installation statistics include the website domain and activity dates. Disconnecting does not erase historical counts. For a domain record deletion request, contact the site operator through <a href="https://ademolaalabi.com/">Ademola Alabi's website</a>.</p><h2>Website analytics</h2><p>The public website uses Google Analytics and Microsoft Clarity to understand website usage. The connection form is masked for Clarity. Private owner pages load neither service. Connection fragments are removed before analytics scripts load.</p><h2>Your installed fonts</h2><p>Installed fonts are served locally from WordPress uploads/fontready. Families and their variants are saved in Elementor Pro’s native Custom Fonts manager and registered in the WordPress media library. Deactivation revokes the FontReady connection and retains native Elementor font records and their media assets. Fonts must be licensed for use on your website.</p><p>FontReady is an independent tool and is not affiliated with or endorsed by Elementor.</p></main></body></html>
