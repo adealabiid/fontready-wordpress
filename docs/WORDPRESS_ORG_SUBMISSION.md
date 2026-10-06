@@ -6,7 +6,7 @@ Status: planning and development. Not submitted. Elementor Pro 4.3.1 source cont
 
 - Test the exact release ZIP on an HTTPS staging site with licensed Elementor Pro. Record WordPress, PHP, Elementor and Elementor Pro versions. Test the screenshot’s native Custom Fonts list, variation count, preview, editor selection and front-end rendering.
 - Test the complete browser journey: conversion first; carry a kit from the main converter; download and install the plugin while keeping that kit; approve after login; return with the same kit; publish once; open Custom Fonts.
-- Test repeat publishing, multiple weights/styles, OTF-to-WOFF2 wrapping, failed imports, existing-name collisions, deleted/draft/trashed fonts, REST query routes, subdirectory sites, expired kits and disconnected access.
+- Test repeat publishing, multiple weights/styles, all five formats in one native row from TTF/OTF/WOFF/WOFF2 inputs, readable filenames and migration from older single-format records, failed imports, existing-name collisions, deleted/draft/trashed fonts, REST query routes, subdirectory sites, expired kits and disconnected access.
 - Specifically inspect current native variable-font metadata and editor behavior. Do not claim native variable-font support until verified. The adapter currently uses the custom/static manager interface and retains weight ranges in its variant data.
 - Test deactivation, reactivation and uninstall. Native font records and media assets are retained; confirm that Elementor continues rendering them independently of FontReady.
 - Review all Plugin Check findings, escaping, translations, accessibility, file-write paths and dependency behavior. Resolve errors and record justified warnings.

@@ -44,7 +44,21 @@ for index, fmt in enumerate(('woff2', 'woff', 'ttf', 'otf')):
         font.flavor = fmt if fmt in ('woff', 'woff2') else None
         output = io.BytesIO(); font.save(output)
     fonts.append({'family': 'FontReady Test', 'weight': str((index+1)*100), 'style': 'normal', 'format': fmt, 'data': base64.b64encode(output.getvalue()).decode()})
+sfnt = fixture()
+import struct
+strings = b''.join(b'\0\0' + struct.pack('<H', len(v)) + v for v in (t.encode('utf-16le') for t in ['Grouped Format Font','Regular','Version 1','Grouped Format Font']))
+eot_header = struct.pack('<IIII10sBBIHH7I4I',80+len(strings)+len(sfnt),len(sfnt),0x10000,0,b'\0'*10,1,0,400,0,0x504C,*([0]*11))
+svg = b'<svg xmlns="http://www.w3.org/2000/svg"><defs><font id="GroupedFormatFont" horiz-adv-x="600"><font-face font-family="Grouped Format Font" units-per-em="1000"/><glyph unicode="A" d="M0 0L10 10"/></font></defs></svg>'
+grouped = []
+for fmt in ('woff2','woff','ttf','svg','eot'):
+    if fmt == 'svg': data = svg
+    elif fmt == 'eot': data = eot_header + strings + sfnt
+    else:
+        with TTFont(io.BytesIO(sfnt)) as font:
+            font.flavor = fmt if fmt in ('woff','woff2') else None
+            output = io.BytesIO(); font.save(output); data = output.getvalue()
+    grouped.append({'family':'Grouped Format Font','weight':'400','style':'normal','format':fmt,'data':base64.b64encode(data).decode()})
 with tempfile.TemporaryDirectory() as directory:
     target = Path(directory) / 'fixture.json'
-    target.write_text(json.dumps({'version': 1, 'fonts': fonts}))
+    target.write_text(json.dumps({'version': 1, 'fonts': fonts, 'elementor_fonts':grouped}))
     subprocess.run([php, '-n', str(root / 'tests' / 'plugin.php'), str(target)], check=True)

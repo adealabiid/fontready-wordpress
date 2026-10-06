@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index 55b6458..cd3adc7 100644
+index 55b6458..da2c341 100644
 --- a/README.md
 +++ b/README.md
-@@ -173,10 +173,14 @@ After launch, submit `/sitemap.xml` in Google Search Console and Bing Webmaster
+@@ -173,10 +173,24 @@ After launch, submit `/sitemap.xml` in Google Search Console and Bing Webmaster
  
  ## Elementor Pro connection and private statistics (0.2.0)
  
@@ -18,8 +18,193 @@ index 55b6458..cd3adc7 100644
 +## Elementor publishing flow (0.3.0)
 +
 +The Elementor page is conversion-first. A ready batch can be opened there from the main converter using its session-owned kit ID. The URL and Elementor Pro/FontReady confirmations sit beside the selected results. WordPress administrator approval carries the kit ID back to the page and resumes publishing. Expired kits show a conversion-again message. Native publishing requires plugin 0.3.0; old connectors are rejected. OTF-only kits are wrapped as WOFF2 for the native adapter. See the plugin repository’s WordPress.org submission plan for outstanding live-test gates.
++
++## Automatic Elementor publishing (0.4.0)
++
++Upload one TTF, OTF, WOFF or WOFF2 on `/font-to-elementor-pro/`. Conversion starts immediately with WOFF2, WOFF, TTF, SVG and EOT fixed as the output set. No output-format settings are shown. Website approval carries the selected kit through the redirect and publishes it; subsequent uploads publish automatically to the connected website in the same tab. All five files share one weight/style row in Elementor. File names use the actual family and weight with a short FontReady suffix. The complete set must fit the existing 5 MB file/25 MB batch limits; failures show an error rather than silently publishing an incomplete set. Deploy plugin 0.4.0 and this website release together.
++
++### Owner dashboard access
++
++Open https://fontready.com/owner/ and sign in with the FontReady **superuser** account, separate from WordPress. A link appears in the website footer. The dashboard shows daily conversions, top fonts for 7/30/365 days, connected Elementor domains and browser-reported installations.
++
++In the deployed web service shell (with the production database and environment), run `python manage.py migrate` followed by `python manage.py createsuperuser`. Enter your private owner username, email and password interactively. Do not commit credentials. Existing owners can reset a password with `python manage.py changepassword USERNAME`. No default account is created. Repository changes alone do not provision a production login.
+diff --git a/converter/cloud_views.py b/converter/cloud_views.py
+index bd27462..10be769 100644
+--- a/converter/cloud_views.py
++++ b/converter/cloud_views.py
+@@ -29,8 +29,10 @@ def json_body(request):
+ 
+ def validate(data):
+     files=data.get('files');formats=data.get('formats');characters=data.get('characters','');display=data.get('font_display','swap')
+-    if not isinstance(files,list) or not 1<=len(files)<=settings.MAX_FILES:raise ValueError('Choose between 1 and 10 font files.')
+-    if not isinstance(formats,list) or not formats or any(not isinstance(f,str) or f not in ['woff2','woff','ttf','otf','svg'] for f in formats):raise ValueError('Select WOFF2, WOFF, TTF, OTF or SVG.')
++    elementor = data.get('profile') == 'elementor'
++    if elementor: formats = ['woff2', 'woff', 'ttf', 'svg', 'eot']
++    if not isinstance(files,list) or not 1<=len(files)<=(1 if elementor else settings.MAX_FILES):raise ValueError('Upload one font for Elementor.' if elementor else 'Choose between 1 and 10 font files.')
++    if not isinstance(formats,list) or not formats or any(not isinstance(f,str) or f not in ['woff2','woff','ttf','otf','svg'] + (['eot'] if elementor else []) for f in formats):raise ValueError('Select WOFF2, WOFF, TTF, OTF or SVG.')
+     if not isinstance(characters,str) or len(characters)>10000 or display not in ['swap','optional','fallback','block','auto']:raise ValueError('Invalid conversion settings.')
+     for file in files:
+         if not isinstance(file,dict):raise ValueError('Invalid font information.')
+@@ -38,7 +40,7 @@ def validate(data):
+         if not isinstance(name,str) or len(name)>255 or Path(name).name!=name or '\\' in name or Path(name).suffix.lower() not in ['.ttf','.otf','.woff','.woff2']:raise ValueError('Supported inputs: TTF, OTF, WOFF and WOFF2.')
+         if type(size)!=int or not 0<size<=settings.MAX_FILE_BYTES:raise ValueError('Maximum 5 MB per file and 25 MB per batch.')
+     if sum(f['size'] for f in files)>settings.MAX_BATCH_BYTES:raise ValueError('Maximum 5 MB per file and 25 MB per batch.')
+-    return files,{'formats':list(dict.fromkeys(formats)),'characters':characters,'font_display':display,'ai_research':True,'woff2_quality':settings.WOFF2_QUALITY}
++    return files,{'formats':list(dict.fromkeys(formats)),'characters':characters,'font_display':display,'ai_research':not elementor,'woff2_quality':settings.WOFF2_QUALITY,'profile':'elementor' if elementor else 'general'}
+ 
+ 
+ @never_cache
+@@ -106,4 +108,3 @@ def maintenance(request):
+     from .cloud_jobs import maintain
+     maintain()
+     return JsonResponse({'status':'ok'})
+-
+diff --git a/converter/elementor_files.py b/converter/elementor_files.py
+new file mode 100644
+index 0000000..2e5797a
+--- /dev/null
++++ b/converter/elementor_files.py
+@@ -0,0 +1,34 @@
++"""Prepare a full native Elementor set from a session-owned, converted font."""
++import json
++import subprocess
++import sys
++import tempfile
++from pathlib import Path
++from django.conf import settings
++
++FORMATS = ('woff2', 'woff', 'ttf', 'svg', 'eot')
++
++
++def complete_files(font, read):
++    if all(fmt in font.get('files', {}) for fmt in FORMATS):
++        return {fmt: read(fmt) for fmt in FORMATS}
++    source = next((fmt for fmt in ('woff2', 'woff', 'ttf', 'otf') if fmt in font.get('files', {})), None)
++    if source is None:
++        raise ValueError('Convert a TTF, OTF, WOFF or WOFF2 font before publishing.')
++    with tempfile.TemporaryDirectory() as directory:
++        root = Path(directory)
++        (root / 'input').mkdir()
++        data = read(source)
++        filename = 'source.' + source
++        (root / 'input' / filename).write_bytes(data)
++        (root / 'job.json').write_text(json.dumps({
++            'manifest': [{'name':font.get('name',font['family']+'.'+source), 'file':filename, 'size':len(data)}],
++            'options': {'formats':list(FORMATS), 'font_display':'swap', 'profile':'elementor'}}))
++        subprocess.run([sys.executable, '-m', 'converter.engine', directory], cwd=settings.BASE_DIR,
++                       timeout=settings.PROCESS_TIMEOUT, check=True, capture_output=True)
++        result = json.loads((root / 'result.json').read_text())['results'][0]
++        missing = set(FORMATS) - set(result['files'])
++        if missing:
++            raise ValueError('This font could not produce the complete Elementor set: ' + ', '.join(sorted(missing)) + '. Try a static TTF or OTF font.')
++        return {fmt: (root / 'output' / result['files'][fmt]).read_bytes()
++                for fmt in FORMATS if fmt in result['files']}
+diff --git a/converter/engine.py b/converter/engine.py
+index bce4919..8b08341 100644
+--- a/converter/engine.py
++++ b/converter/engine.py
+@@ -14,6 +14,7 @@ from .svg_export import write_svg_font
+ from .compression import woff2_quality
+ from .outlines import write_outline_format, UnsupportedOutlineConversion
+ from .kit import filename_stem, write_developer_files
++from .eot_export import eot_bytes
+ 
+ 
+ def convert(directory, manifest, options):
+@@ -44,18 +45,29 @@ def convert(directory, manifest, options):
+                 sub.subset(font)
+             stem = filename_stem(family,variable or weight,style,metadata['axes'],used_stems,hashlib.sha256((directory/'input'/item['file']).read_bytes()).hexdigest())
+             sources, sizes, filenames, warnings, skipped_formats = [], {}, {}, [], {}
+-            for fmt in sorted(options['formats'],key=['woff2','woff','otf','ttf','svg'].index):
++            for fmt in sorted(options['formats'],key=['woff2','woff','otf','ttf','svg','eot'].index):
+                 filename = f'{stem}.{fmt}'
+-                if fmt in ['ttf', 'otf'] and fmt != metadata['outline_format']:
++                if fmt == 'eot':
++                    ttf = outputs / f'{stem}.ttf'
++                    if not ttf.is_file():
++                        skipped_formats[fmt] = 'A TrueType outline version is required for this legacy format.'
++                        continue
++                    (outputs / filename).write_bytes(eot_bytes(ttf.read_bytes()))
++                elif fmt in ['ttf', 'otf'] and fmt != metadata['outline_format']:
+                     try:
+-                        write_outline_format(font, outputs / filename, fmt)
++                        outline_source = font
++                        if options.get('profile') == 'elementor' and 'fvar' in font and fmt == 'ttf':
++                            from fontTools.varLib.instancer import instantiateVariableFont
++                            outline_source = instantiateVariableFont(font, {a.axisTag:a.defaultValue for a in font['fvar'].axes}, inplace=False)
++                            warnings.append('Legacy TTF/EOT outlines use the default variable-font instance. WOFF and WOFF2 retain the variable axes.')
++                        write_outline_format(outline_source, outputs / filename, fmt)
+                     except UnsupportedOutlineConversion as error:
+                         skipped_formats[fmt] = str(error)
+                         warnings.append(f'{fmt.upper()} unavailable: {error}')
+                         continue
+                     warnings.append(f'{fmt.upper()} uses converted outlines without original hinting; check its rendering before use.')
+                 elif fmt == 'svg':
+-                    write_svg_font(font, outputs / filename, family, stem, variable or weight, style)
++                    write_svg_font(font, outputs / filename, family, family.replace(' ', '') if options.get('profile') == 'elementor' else stem, variable or weight, style)
+                     warnings.append('SVG is a legacy font format for compatible tools. Modern browsers do not support SVG fonts; shaping, kerning, colour and variable axes are not preserved.')
+                 elif not characters and fmt == input_format:
+                     shutil.copyfile(directory / 'input' / item['file'], outputs / filename)
+@@ -68,9 +80,11 @@ def convert(directory, manifest, options):
+                         font.save(outputs / filename)
+                 sizes[fmt] = (outputs / filename).stat().st_size
+                 filenames[fmt] = filename
+-                css_format = {'ttf':'truetype','otf':'opentype'}.get(fmt,fmt)
+-                suffix = f'#{stem}' if fmt == 'svg' else ''
++                css_format = {'ttf':'truetype','otf':'opentype','eot':'embedded-opentype'}.get(fmt,fmt)
++                suffix = '#' + (family.replace(' ', '') if options.get('profile') == 'elementor' else stem) if fmt == 'svg' else ''
+                 sources.append(f"url('./fonts/{filename}{suffix}') format('{css_format}')")
++            if options.get('profile') == 'elementor' and not {'woff2','woff','ttf','svg','eot'}.issubset(filenames):
++                raise ValueError('This font could not produce all five Elementor formats. Try a static TTF or OTF font.')
+             if not sources:
+                 raise ValueError('No compatible output selected for this font.')
+             rules.append("@font-face {\n" + f"  font-family: '{family}';\n  src: {', '.join(sources)};\n  font-weight: {variable or weight};\n  font-style: {style};\n  font-display: {options['font_display']};\n" + "}")
+@@ -86,7 +100,7 @@ def convert(directory, manifest, options):
+         for file in sorted(outputs.rglob('*')):
+             if not file.is_file():
+                 continue
+-            archive.write(file, f'fonts/{file.name}' if file.suffix in ['.woff', '.woff2', '.ttf', '.otf', '.svg'] else str(file.relative_to(outputs)), compress_type=zipfile.ZIP_STORED if file.suffix in ['.woff','.woff2'] else zipfile.ZIP_DEFLATED)
++            archive.write(file, f'fonts/{file.name}' if file.suffix in ['.woff', '.woff2', '.ttf', '.otf', '.svg', '.eot'] else str(file.relative_to(outputs)), compress_type=zipfile.ZIP_STORED if file.suffix in ['.woff','.woff2'] else zipfile.ZIP_DEFLATED)
+     (directory / 'result.json').write_text(json.dumps({'results': results, 'css': css}))
+ 
+ 
+@@ -100,4 +114,3 @@ if __name__ == '__main__':
+     except (ImportError, ValueError):
+         pass
+     convert(directory, config['manifest'], config['options'])
+-
+diff --git a/converter/eot_export.py b/converter/eot_export.py
+new file mode 100644
+index 0000000..957a632
+--- /dev/null
++++ b/converter/eot_export.py
+@@ -0,0 +1,24 @@
++"""Uncompressed EOT 1.0 wrapper, preserving the embedded sfnt and embedding flags."""
++import io
++import struct
++from fontTools.ttLib import TTFont
++
++
++def eot_bytes(sfnt):
++    with TTFont(io.BytesIO(sfnt), recalcTimestamp=False) as font:
++        os2, head, names = font['OS/2'], font['head'], font['name']
++        panose = bytes(getattr(os2.panose, key) for key in (
++            'bFamilyType', 'bSerifStyle', 'bWeight', 'bProportion', 'bContrast',
++            'bStrokeVariation', 'bArmStyle', 'bLetterForm', 'bMidline', 'bXHeight'))
++        strings = b''.join(b'\0\0' + struct.pack('<H', len(value)) + value
++                           for value in ((names.getDebugName(i) or '').encode('utf-16le')
++                                         for i in (1, 2, 5, 4)))
++        header = struct.pack('<IIII10sBBIHH7I4I', 80 + len(strings) + len(sfnt),
++                             len(sfnt), 0x10000, 0, panose, 1,
++                             int(bool(os2.fsSelection & 1)), os2.usWeightClass,
++                             os2.fsType, 0x504C,
++                             *(getattr(os2, key, 0) for key in (
++                                 'ulUnicodeRange1', 'ulUnicodeRange2', 'ulUnicodeRange3',
++                                 'ulUnicodeRange4', 'ulCodePageRange1', 'ulCodePageRange2')),
++                             head.checkSumAdjustment, 0, 0, 0, 0)
++        return header + strings + sfnt
 diff --git a/converter/seo.py b/converter/seo.py
-index 1db11e8..86dc925 100644
+index 1db11e8..d050742 100644
 --- a/converter/seo.py
 +++ b/converter/seo.py
 @@ -56,7 +56,7 @@ def page_context(request, language='en'):
@@ -27,12 +212,12 @@ index 1db11e8..86dc925 100644
          {'@type':'SoftwareApplication', '@id':origin+'/#converter', 'name':'FontReady', 'url':origin+'/',
           'applicationCategory':'DeveloperApplication', 'operatingSystem':'Web browser', 'creator':{'@id':origin+'/#developer'},
 -         'featureList':['TTF, OTF, WOFF and WOFF2 uploads','WOFF2, WOFF, TTF, OTF and legacy SVG outputs','Individual files and CSS kit','24-minute download window','Font publishing for Elementor Pro through a WordPress administrator redirect']},
-+         'featureList':['TTF, OTF, WOFF and WOFF2 uploads','WOFF2, WOFF, TTF, OTF and legacy SVG outputs','Individual files and CSS kit','24-minute download window','Publishing converted fonts into Elementor Pro Custom Fonts through a WordPress administrator approval']},
++         'featureList':['TTF, OTF, WOFF and WOFF2 uploads','WOFF2, WOFF, TTF, OTF and legacy SVG outputs','Individual files and CSS kit','24-minute download window','Automatic WOFF2, WOFF, TTF, SVG and EOT conversion and publishing into Elementor Pro Custom Fonts after WordPress administrator approval']},
          {'@type':'WebPage', '@id':canonical+'#page', 'url':canonical, 'name':text['title'], 'description':text['description'],
           'inLanguage':language, 'isPartOf':{'@id':origin+'/#website'}, 'about':{'@id':origin+'/#converter'}, 'author':{'@id':origin+'/#developer'}},
          {'@type':'FAQPage', '@id':canonical+'#questions', 'inLanguage':language,
 diff --git a/converter/seo_content.json b/converter/seo_content.json
-index b8d4721..0d3e2c3 100644
+index b8d4721..c310702 100644
 --- a/converter/seo_content.json
 +++ b/converter/seo_content.json
 @@ -47,7 +47,7 @@
@@ -49,7 +234,7 @@ index b8d4721..0d3e2c3 100644
        [
          "How do I install fonts in Elementor Pro?",
 -        "Install and activate FontReady on your WordPress website. Open Font to Elementor Pro, confirm Elementor Pro and your domain, then connect through WordPress. Convert your fonts and choose Install fonts. Refresh Elementor and find your family in the FontReady group."
-+        "Convert your fonts on the Font to Elementor Pro page, or open a ready kit there from the main converter. Choose Publish to Elementor Pro website, enter your URL and confirm Elementor Pro and FontReady are installed and active. Approve publishing in WordPress. Your selected fonts return with you and are published into Elementor Custom Fonts."
++        "Upload one TTF, OTF, WOFF or WOFF2 font on Font to Elementor Pro. Conversion starts automatically and prepares WOFF2, WOFF, TTF, SVG and EOT without format choices. Enter your website URL, confirm Elementor Pro and FontReady are installed and active, and approve in WordPress. Publishing resumes automatically. A connected website receives subsequent fonts automatically. Ready kits from the main converter can also be published there."
        ],
        [
          "Do I need a connection key or FontReady account?",
@@ -58,7 +243,7 @@ index b8d4721..0d3e2c3 100644
        [
          "¿Cómo instalo fuentes en Elementor Pro?",
 -        "Instala y activa FontReady en WordPress. Abre Font to Elementor Pro, confirma Elementor Pro y tu dominio y conecta desde WordPress. Convierte las fuentes y pulsa Install fonts. Actualiza Elementor y busca la familia en el grupo FontReady."
-+        "Convierte las fuentes en Font to Elementor Pro o abre allí un kit listo del convertidor principal. Pulsa Publish to Elementor Pro website, introduce tu URL y confirma que Elementor Pro y FontReady están instalados y activos. Aprueba en WordPress. Las fuentes seleccionadas se conservan y se publican en Custom Fonts de Elementor."
++        "Sube una fuente TTF, OTF, WOFF o WOFF2 en Font to Elementor Pro. La conversión empieza automáticamente y prepara WOFF2, WOFF, TTF, SVG y EOT sin elegir formatos. Introduce la URL, confirma que Elementor Pro y FontReady están activos y aprueba en WordPress. La publicación se reanuda automáticamente. Las siguientes fuentes se publican automáticamente en el sitio conectado."
        ],
        [
          "¿Necesito una clave o cuenta de FontReady?",
@@ -67,7 +252,7 @@ index b8d4721..0d3e2c3 100644
        [
          "Как установить шрифты в Elementor Pro?",
 -        "Установите и активируйте FontReady в WordPress. Откройте Font to Elementor Pro, подтвердите Elementor Pro и домен, затем подключитесь через WordPress. Конвертируйте шрифты и нажмите Install fonts. Обновите Elementor и выберите семейство в группе FontReady."
-+        "Конвертируйте шрифты на странице Font to Elementor Pro или откройте там готовый комплект из основного конвертера. Нажмите Publish to Elementor Pro website, введите URL и подтвердите, что Elementor Pro и FontReady установлены и активны. Подтвердите публикацию в WordPress. Выбранные шрифты сохраняются и публикуются в Custom Fonts Elementor."
++        "Загрузите один шрифт TTF, OTF, WOFF или WOFF2 на Font to Elementor Pro. Конвертация запускается автоматически и создаёт WOFF2, WOFF, TTF, SVG и EOT без выбора форматов. Введите URL сайта, подтвердите активные Elementor Pro и FontReady и разрешите публикацию в WordPress. Публикация продолжится автоматически. Следующие шрифты автоматически публикуются на подключённом сайте."
        ],
        [
          "Нужны ли ключ подключения или аккаунт FontReady?",
@@ -76,7 +261,7 @@ index b8d4721..0d3e2c3 100644
        [
          "Comment installer des polices dans Elementor Pro ?",
 -        "Installez et activez FontReady dans WordPress. Ouvrez Font to Elementor Pro, confirmez Elementor Pro et votre domaine, puis connectez-vous via WordPress. Convertissez vos polices et cliquez sur Install fonts. Actualisez Elementor et choisissez la famille dans le groupe FontReady."
-+        "Convertissez les polices sur Font to Elementor Pro ou ouvrez-y un kit prêt du convertisseur principal. Cliquez sur Publish to Elementor Pro website, saisissez votre URL et confirmez que Elementor Pro et FontReady sont installés et actifs. Approuvez dans WordPress. Les polices sélectionnées sont conservées et publiées dans Custom Fonts d’Elementor."
++        "Importez une police TTF, OTF, WOFF ou WOFF2 sur Font to Elementor Pro. La conversion démarre automatiquement et prépare WOFF2, WOFF, TTF, SVG et EOT sans choix de formats. Saisissez votre URL, confirmez Elementor Pro et FontReady actifs, puis autorisez dans WordPress. La publication reprend automatiquement. Les polices suivantes sont publiées automatiquement sur le site connecté."
        ],
        [
          "Faut-il une clé de connexion ou un compte FontReady ?",
@@ -85,7 +270,7 @@ index b8d4721..0d3e2c3 100644
        [
          "Wie installiere ich Schriften in Elementor Pro?",
 -        "Installiere und aktiviere FontReady in WordPress. Öffne Font to Elementor Pro, bestätige Elementor Pro und deine Domain und verbinde dich über WordPress. Konvertiere die Schriften und klicke auf Install fonts. Aktualisiere Elementor und wähle die Familie in der Gruppe FontReady."
-+        "Konvertiere Schriften auf Font to Elementor Pro oder öffne dort ein fertiges Paket aus dem Hauptkonverter. Klicke auf Publish to Elementor Pro website, gib deine URL ein und bestätige, dass Elementor Pro und FontReady installiert und aktiv sind. Bestätige in WordPress. Die ausgewählten Schriften bleiben erhalten und werden in Elementor Custom Fonts veröffentlicht."
++        "Lade eine TTF-, OTF-, WOFF- oder WOFF2-Schrift auf Font to Elementor Pro hoch. Die Konvertierung startet automatisch und erstellt WOFF2, WOFF, TTF, SVG und EOT ohne Formatauswahl. Gib die Website-URL ein, bestätige Elementor Pro und FontReady als aktiv und genehmige in WordPress. Die Veröffentlichung wird automatisch fortgesetzt. Weitere Schriften werden auf der verbundenen Website automatisch veröffentlicht."
        ],
        [
          "Brauche ich einen Verbindungsschlüssel oder ein FontReady-Konto?",
@@ -94,7 +279,7 @@ index b8d4721..0d3e2c3 100644
        [
          "Como instalar fontes no Elementor Pro?",
 -        "Instale e ative FontReady no WordPress. Abra Font to Elementor Pro, confirme Elementor Pro e seu domínio e conecte pelo WordPress. Converta as fontes e clique em Install fonts. Atualize o Elementor e encontre a família no grupo FontReady."
-+        "Converta as fontes em Font to Elementor Pro ou abra ali um kit pronto do conversor principal. Clique em Publish to Elementor Pro website, digite a URL e confirme que Elementor Pro e FontReady estão instalados e ativos. Aprove no WordPress. As fontes selecionadas são preservadas e publicadas em Custom Fonts do Elementor."
++        "Envie uma fonte TTF, OTF, WOFF ou WOFF2 em Font to Elementor Pro. A conversão começa automaticamente e prepara WOFF2, WOFF, TTF, SVG e EOT sem escolher formatos. Digite a URL, confirme que Elementor Pro e FontReady estão ativos e aprove no WordPress. A publicação continua automaticamente. As próximas fontes são publicadas automaticamente no site conectado."
        ],
        [
          "Preciso de uma chave de conexão ou conta FontReady?",
@@ -146,10 +331,41 @@ index 522cd45..63d4a39 100644
 +        self.assertNotIn('value="svg"',page)
 +        self.assertIn('id="elementor-publish-link"',self.client.get('/').content.decode())
 diff --git a/converter/test_wordpress.py b/converter/test_wordpress.py
-index fd0c605..6e560cf 100644
+index fd0c605..2d876b5 100644
 --- a/converter/test_wordpress.py
 +++ b/converter/test_wordpress.py
-@@ -106,3 +106,12 @@ class WordPressExportTests(TestCase):
+@@ -30,10 +30,11 @@ class WordPressExportTests(TestCase):
+         self.url = f'/api/conversions/{self.job.token}/wordpress/'
+         return self.job
+ 
+-    def test_export_prefers_woff2_and_roundtrips_real_font(self):
++    def test_export_all_elementor_slots_and_roundtrips_real_font(self):
+         job = self.convert()
+         response = self.client.post(self.url)
+         self.assertEqual(response.status_code, 200)
++        self.assertEqual({f['format'] for f in response.json()['fonts']}, {'woff2','woff','ttf','svg','eot'})
+         font = response.json()['fonts'][0]
+         self.assertEqual(font['format'], 'woff2')
+         self.assertEqual(font['family'], job.results[0]['family'])
+@@ -77,7 +78,7 @@ class WordPressExportTests(TestCase):
+             self.assertTrue(stream.closed)
+             job.blob_assets['fonts'][name]['path'] = 'other-job/output/font.ttf'
+             job.save()
+-            self.assertEqual(self.client.post(self.url).status_code, 503)
++            self.assertEqual(self.client.post(self.url).status_code, 400)
+             self.assertEqual(client.get_object.call_count, 1)
+ 
+     def test_blob_export_and_oversized_asset(self):
+@@ -94,7 +95,7 @@ class WordPressExportTests(TestCase):
+             self.assertEqual(self.client.post(self.url).status_code, 200)
+             job.results[0]['sizes']['ttf'] = 6 * 1024 * 1024
+             job.save()
+-            self.assertEqual(self.client.post(self.url).status_code, 503)
++            self.assertEqual(self.client.post(self.url).status_code, 400)
+             self.assertEqual(storage.call_count, 1)
+ 
+     def test_missing_archive_and_downloadable_plugin(self):
+@@ -106,3 +107,40 @@ class WordPressExportTests(TestCase):
          self.assertEqual(download.status_code, 200)
          self.assertEqual(download['Content-Type'], 'application/zip')
          download.close()
@@ -158,12 +374,85 @@ index fd0c605..6e560cf 100644
 +        self.convert(('otf',))
 +        response = self.client.post(self.url)
 +        self.assertEqual(response.status_code, 200)
++        self.assertEqual({f['format'] for f in response.json()['fonts']}, {'woff2','woff','ttf','svg','eot'})
 +        font = response.json()['fonts'][0]
 +        self.assertEqual(font['format'], 'woff2')
 +        with TTFont(io.BytesIO(base64.b64decode(font['data']))) as parsed:
 +            self.assertIn('CFF ', parsed)
++
++    def test_elementor_profile_forces_all_five_formats(self):
++        import struct, zipfile
++        response = self.client.post('/api/conversions/', {'fonts': SimpleUploadedFile('test.ttf',font_bytes()), 'profile':'elementor','formats':['woff2']})
++        self.assertEqual(response.status_code,202)
++        run_next();job=Conversion.objects.get()
++        self.assertEqual(set(job.results[0]['files']),{'woff2','woff','ttf','svg','eot'})
++        self.assertFalse(job.options['ai_research'])
++        from django.conf import settings
++        with zipfile.ZipFile(settings.PRIVATE_ROOT/str(job.token)/'fontready.zip') as kit:
++            data=kit.read('fonts/'+job.results[0]['files']['eot'])
++            total,sfnt_size,version,flags=struct.unpack('<IIII',data[:16])
++            self.assertEqual((total,version,flags),(len(data),0x10000,0))
++            self.assertEqual(data[34:36],b'\x4c\x50')
++            offset=80
++            for i in range(4):offset+=4+struct.unpack('<H',data[offset+2:offset+4])[0]
++            self.assertEqual(len(data)-offset,sfnt_size)
++            with TTFont(io.BytesIO(data[offset:])) as font:self.assertEqual(font.getBestCmap(),{32:'space',65:'A',66:'B'})
++
++    def test_elementor_rejects_multiple_uploads_and_has_no_format_choices(self):
++        response=self.client.post('/api/conversions/',{'profile':'elementor','fonts':[SimpleUploadedFile('a.ttf',font_bytes()),SimpleUploadedFile('b.ttf',font_bytes())]})
++        self.assertEqual(response.status_code,400)
++        html=self.client.get('/font-to-elementor-pro/').content.decode()
++        self.assertNotIn('name="format"',html)
++        self.assertIn('id="elementor-progress"',html)
++        from .cloud_views import validate
++        with self.assertRaises(ValueError):validate({'profile':'elementor','files':[{'name':'a.ttf','size':100},{'name':'b.ttf','size':100}]})
+diff --git a/converter/views.py b/converter/views.py
+index 02b02a2..61d33e2 100644
+--- a/converter/views.py
++++ b/converter/views.py
+@@ -57,9 +57,12 @@ def conversions(request):
+     formats = request.POST.getlist('formats')
+     characters = request.POST.get('characters', '')
+     font_display = request.POST.get('font_display', 'swap')
+-    if not 1 <= len(files) <= settings.MAX_FILES:
+-        return JsonResponse({'error': 'Choose between 1 and 10 font files.'}, status=400)
+-    if not formats or any(f not in ['woff2', 'woff', 'ttf', 'otf', 'svg'] for f in formats):
++    elementor = request.POST.get('profile') == 'elementor'
++    if elementor:
++        formats = ['woff2', 'woff', 'ttf', 'svg', 'eot']
++    if not 1 <= len(files) <= (1 if elementor else settings.MAX_FILES):
++        return JsonResponse({'error': 'Upload one font for Elementor.' if elementor else 'Choose between 1 and 10 font files.'}, status=400)
++    if not formats or any(f not in ['woff2', 'woff', 'ttf', 'otf', 'svg'] + (['eot'] if elementor else []) for f in formats):
+         return JsonResponse({'error': 'Select WOFF2, WOFF, TTF, OTF or SVG.'}, status=400)
+     if font_display not in ['swap', 'optional', 'fallback', 'block', 'auto'] or len(characters) > 10000:
+         return JsonResponse({'error': 'Invalid conversion settings.'}, status=400)
+@@ -75,7 +78,9 @@ def conversions(request):
+     from datetime import timedelta
+     if Conversion.objects.filter(owner=key, created_at__gte=timezone.now()-timedelta(minutes=10)).count() >= 10:
+         return JsonResponse({'error': 'Please wait before starting another batch.'}, status=429)
+-    job = Conversion.objects.create(owner=key, state='uploading', options={'formats': list(dict.fromkeys(formats)), 'characters': characters, 'font_display': font_display, 'ai_research':True, 'woff2_quality':settings.WOFF2_QUALITY})
++    job = Conversion.objects.create(owner=key, state='uploading', options={'formats': list(dict.fromkeys(formats)), 'characters': characters, 'font_display': font_display, 'ai_research':not elementor, 'woff2_quality':settings.WOFF2_QUALITY})
++    if elementor:
++        job.options['profile'] = 'elementor'
+     directory = settings.PRIVATE_ROOT / str(job.token)
+     try:
+         (directory / 'input').mkdir(parents=True, mode=0o700)
+@@ -88,7 +93,7 @@ def conversions(request):
+             manifest.append({'name': Path(file.name).name[:200], 'size': file.size, 'file': filename})
+         job.manifest = manifest
+         job.state = 'queued'
+-        job.save(update_fields=['manifest', 'state'])
++        job.save(update_fields=['manifest', 'state', 'options'])
+     except Exception:
+         shutil.rmtree(directory, ignore_errors=True)
+         job.delete()
+@@ -206,4 +211,3 @@ def cloud_download(job,asset):
+     response['Cache-Control']='private, no-store, max-age=0'
+     response['Referrer-Policy']='no-referrer'
+     return response
+-
 diff --git a/converter/wordpress.py b/converter/wordpress.py
-index 9529616..9a915a3 100644
+index 9529616..01163e8 100644
 --- a/converter/wordpress.py
 +++ b/converter/wordpress.py
 @@ -5,6 +5,7 @@ import zipfile
@@ -174,33 +463,37 @@ index 9529616..9a915a3 100644
  from django.http import JsonResponse, FileResponse
  from django.views.decorators.cache import never_cache
  from django.views.decorators.http import require_POST
-@@ -66,12 +67,24 @@ def bundle(request, token):
+@@ -63,18 +64,18 @@ def bundle(request, token):
+         return JsonResponse({'error': 'Invalid font batch.'}, status=400)
+     fonts, total = [], 0
+     try:
++        from .elementor_files import complete_files
          for font in job.results:
-             fmt = next((f for f in ('woff2', 'woff', 'ttf', 'otf') if f in font.get('files', {})), None)
-             if not fmt:
+-            fmt = next((f for f in ('woff2', 'woff', 'ttf', 'otf') if f in font.get('files', {})), None)
+-            if not fmt:
 -                return JsonResponse({'error': 'Select WOFF2, WOFF, TTF or OTF when converting. SVG cannot be published.'}, status=400)
-+                return JsonResponse({'error': 'Choose WOFF2, WOFF or TTF for Elementor publishing. Convert again with WOFF2 selected.'}, status=400)
-             size = int(font['sizes'][fmt])
-             total += size
-             if total > settings.MAX_BATCH_BYTES:
-                 return JsonResponse({'error': 'The WordPress batch exceeds 25 MB. Convert fewer fonts.'}, status=400)
-             data = font_bytes(job, font['files'][fmt], size)
-+            if fmt == 'otf':
-+                import io
-+                from fontTools.ttLib import TTFont
-+                with TTFont(io.BytesIO(data)) as parsed:
-+                    parsed.flavor = 'woff2'
-+                    output = io.BytesIO()
-+                    parsed.save(output)
-+                data = output.getvalue()
-+                total += len(data) - size
+-            size = int(font['sizes'][fmt])
+-            total += size
+-            if total > settings.MAX_BATCH_BYTES:
+-                return JsonResponse({'error': 'The WordPress batch exceeds 25 MB. Convert fewer fonts.'}, status=400)
+-            data = font_bytes(job, font['files'][fmt], size)
+-            fonts.append({'family': font['family'], 'weight': str(font['weight']),
+-                          'style': font['style'], 'format': fmt,
+-                          'data': base64.b64encode(data).decode('ascii')})
++            assets = complete_files(font, lambda fmt: font_bytes(job, font['files'][fmt], int(font['sizes'][fmt])))
++            for fmt, data in assets.items():
++                total += len(data)
 +                if len(data) > settings.MAX_FILE_BYTES or total > settings.MAX_BATCH_BYTES:
-+                    return JsonResponse({'error':'The Elementor font batch is too large.'}, status=400)
-+                fmt = 'woff2'
-             fonts.append({'family': font['family'], 'weight': str(font['weight']),
-                           'style': font['style'], 'format': fmt,
-                           'data': base64.b64encode(data).decode('ascii')})
-@@ -119,13 +132,23 @@ def start_connection(request):
++                    return JsonResponse({'error':'The complete Elementor font set exceeds the file or batch limit. Publish fewer fonts.'}, status=400)
++                fonts.append({'family': font['family'], 'weight': str(font['weight']),
++                              'style': font['style'], 'format': fmt,
++                              'data': base64.b64encode(data).decode('ascii')})
++    except ValueError as error:
++        return JsonResponse({'error': str(error)}, status=400)
+     except Exception:
+         return JsonResponse({'error': 'Font files are unavailable. Try again or convert a new kit.'}, status=503)
+     return JsonResponse({'version': 1, 'fonts': fonts})
+@@ -119,13 +120,23 @@ def start_connection(request):
      try:
          data = json.loads(request.body)
          site = normalize_site(data.get('site'))
@@ -227,7 +520,7 @@ index 9529616..9a915a3 100644
  
  
  @never_cache
-@@ -142,14 +165,15 @@ def complete_connection(request):
+@@ -142,14 +153,15 @@ def complete_connection(request):
          if urlsplit(site).hostname != urlsplit(pair['site']).hostname:
              raise ValueError('The confirmed website domain does not match.')
          families, variants = int(data['families']), int(data['variants'])
@@ -245,34 +538,50 @@ index 9529616..9a915a3 100644
  
  
  @never_cache
-@@ -178,6 +202,8 @@ def elementor_page(request):
+@@ -170,7 +182,7 @@ def report_publish(request, token):
+ def elementor_page(request):
+     from .seo import page_context
+     context = page_context(request)
+-    context['seo'] = dict(context['seo'], title='Font to Elementor Pro — FontReady', description='Convert fonts and install them on your Elementor Pro website. Confirm your domain, connect through WordPress and publish without copying connection keys.')
++    context['seo'] = dict(context['seo'], title='Font to Elementor Pro — FontReady', description='Upload one font for Elementor Pro. FontReady automatically prepares WOFF2, WOFF, TTF, SVG and EOT, then publishes them to Custom Fonts after website approval.')
+     context['canonical'] = settings.PUBLIC_SITE_URL.rstrip('/')+'/font-to-elementor-pro/'
+     context['languages'] = []
+     for entity in context['structured_data']['@graph']:
+@@ -178,6 +190,8 @@ def elementor_page(request):
              entity.update({'@id':context['canonical']+'#page','url':context['canonical'],'name':context['seo']['title'],'description':context['seo']['description']})
          if entity['@type'] == 'FAQPage':
              entity['@id']=context['canonical']+'#questions'
 +    context['seo']['heading'] = 'Your fonts, straight to Elementor Pro.'
-+    context['seo']['intro'] = 'Convert your fonts here, confirm your website and publish the selected batch into Elementor Custom Fonts.'
++    context['seo']['intro'] = 'Upload one font, confirm Elementor Pro and FontReady on your website, and publish all five formats into Elementor Custom Fonts.'
      context['elementor_page'] = True
      return render(request, 'index.html', context)
  
 diff --git a/scripts/check_wordpress.py b/scripts/check_wordpress.py
-index 50a906b..b66c13e 100644
+index 50a906b..93d08b9 100644
 --- a/scripts/check_wordpress.py
 +++ b/scripts/check_wordpress.py
-@@ -28,7 +28,8 @@ with tempfile.TemporaryDirectory() as directory:
+@@ -24,11 +24,13 @@ with tempfile.TemporaryDirectory() as directory:
+     data = font_bytes()
+     (folder / 'input' / '0.ttf').write_bytes(data)
+     convert(folder, [{'file': '0.ttf', 'name': 'test.ttf', 'size': len(data)}],
+-            {'formats': ['woff2', 'woff', 'ttf', 'otf'], 'font_display': 'swap'})
++            {'formats': ['woff2', 'woff', 'ttf', 'otf','svg','eot'], 'font_display': 'swap','profile':'elementor'})
      result = json.loads((folder / 'result.json').read_text())['results'][0]
      fonts = [{'family': 'FontReady Test', 'weight': str((i+1)*100), 'style': 'normal', 'format': fmt,
                'data': base64.b64encode((folder / 'output' / name).read_bytes()).decode()}
 -             for i, (fmt, name) in enumerate(result['files'].items())]
 +             for i, fmt in enumerate(('woff2', 'woff', 'ttf', 'otf'))
 +             for name in (result['files'][fmt],)]
++    grouped = [{'family':'Grouped Format Font','weight':'400','style':'normal','format':fmt,'data':base64.b64encode((folder/'output'/result['files'][fmt]).read_bytes()).decode()} for fmt in ('woff2','woff','ttf','svg','eot')]
      fixture = folder / 'fixture.json'
-     fixture.write_text(json.dumps({'version': 1, 'fonts': fonts}))
+-    fixture.write_text(json.dumps({'version': 1, 'fonts': fonts}))
++    fixture.write_text(json.dumps({'version': 1, 'fonts': fonts, 'elementor_fonts':grouped}))
      subprocess.run([php, '-n', str(root / 'wordpress' / 'tests' / 'plugin.php'), str(fixture)], check=True)
 diff --git a/scripts/check_wordpress_ui.cjs b/scripts/check_wordpress_ui.cjs
-index 90e70ae..ce57e68 100644
+index 90e70ae..634162b 100644
 --- a/scripts/check_wordpress_ui.cjs
 +++ b/scripts/check_wordpress_ui.cjs
-@@ -1,22 +1,24 @@
+@@ -1,22 +1,25 @@
  const fs=require('fs'),vm=require('vm'),assert=require('assert');
  const source=fs.readFileSync('static/wordpress.js','utf8');
  const good={endpoint:'https://site.example/wp-json/fontready/v1/fonts',status:'https://site.example/wp-json/fontready/v1/connection',site:'https://site.example/',key:'a'.repeat(64),expires:Math.floor(Date.now()/1000)+3600};
@@ -282,11 +591,11 @@ index 90e70ae..ce57e68 100644
 - const calls=[];const context={window:{fontreadyCallback:callback},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},location:{assign(url){calls.push({kind:'navigate',url})}},document:{getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
 - vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved};
 +function setup({preview=false,expired=false,code=200,connection=good,callback=null,elementor=false,kit=null}={}){
-+ const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-site','wordpress-pro','wordpress-connect','wordpress-plugin','website-confirmation','elementor-manage','result','connection-status','wordpress-disconnect'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:'',hidden:false,scrollIntoView(){}};
++ const nodes={};for(const id of ['wordpress-publish','wordpress-status','wordpress-site','wordpress-pro','wordpress-connect','wordpress-plugin','website-confirmation','elementor-manage','result','connection-status','wordpress-disconnect','elementor-progress'])nodes[id]={value:'',checked:false,disabled:false,textContent:'',className:'',hidden:false,scrollIntoView(){}};
 + const saved=new Map();if(connection)saved.set('fontready.website.v3',JSON.stringify(connection));saved.set('fontready.requested-site','https://site.example/');
 + if(kit){saved.set('fontready.selected-kit',kit);saved.set('fontready.pending-publish',kit);}
-+ const calls=[];const context={window:{fontreadyCallback:callback},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},history:{replaceState(){}},location:{href:'https://fontready.com/font-to-elementor-pro/'+(kit?'?kit='+kit:''),assign(url){calls.push({kind:'navigate',url})}},document:{body:{dataset:{elementor:elementor?'true':'false'}},getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});if(path.endsWith('/complete/'))return {job:kit};if(path.startsWith('/api/conversions/')&&!options)return {id:kit,state:'ready',expires_at:new Date(Date.now()+60000).toISOString(),results:[]};return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,native_custom_fonts:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
-+ context.showResult=job=>{context.activeJob=job;};vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved};
++ const calls=[],listeners={};const context={window:{fontreadyCallback:callback,addEventListener:(name,fn)=>listeners[name]=fn},sessionStorage:{getItem:k=>saved.get(k)||null,setItem:(k,v)=>saved.set(k,v),removeItem:k=>saved.delete(k)},history:{replaceState(){}},location:{href:'https://fontready.com/font-to-elementor-pro/'+(kit?'?kit='+kit:''),assign(url){calls.push({kind:'navigate',url})}},document:{body:{dataset:{elementor:elementor?'true':'false'}},getElementById:id=>nodes[id]},previewOnly:preview,activeJob:{id:'test',state:'ready',expires_at:new Date(Date.now()+(expired?-1000:60000)).toISOString()},Date,URL,AbortSignal,JSON,Number,Array,Error,csrf:()=> 'csrf',api:async(path,options)=>{calls.push({kind:'api',path,options});if(path.endsWith('/complete/'))return {job:kit};if(path.startsWith('/api/conversions/')&&!options)return {id:kit,state:'ready',expires_at:new Date(Date.now()+60000).toISOString(),results:[]};return path.includes('connect/')?{url:'https://site.example/wp-admin/admin.php?page=fontready'}:{version:1,fonts:[]}},fetch:async(path,options)=>{calls.push({kind:'wp',path,options});return {ok:code===200,status:code,json:async()=>code===200?(path.includes('connection')?{site:good.site,elementor_pro:true,native_custom_fonts:true,multi_format_import:true,families:1,variants:1}:{imported:1,families:['Example']}):{message:'Reconnect'}}}};
++ context.showResult=job=>{context.activeJob=job;};vm.createContext(context);vm.runInContext(source,context);return {nodes,calls,saved,listeners};
  }
  (async()=>{
   let checks=0;const check=(v,msg)=>{assert(v,msg);checks++};
@@ -304,6 +613,7 @@ index 90e70ae..ce57e68 100644
 + x=setup({code:401});await x.nodes['wordpress-publish'].onclick();check(!x.saved.has('fontready.website.v3'),'Revoked connection cleared');x=setup();x.nodes['wordpress-disconnect'].onclick();check(!x.saved.has('fontready.website.v3'),'Disconnect clears credential');
 + x=setup({connection:null,callback:{...good,state:'b'.repeat(64)}});await new Promise(resolve=>setImmediate(resolve));check(x.saved.has('fontready.website.v3'),'Callback confirmed and stored');check(x.calls.filter(c=>c.kind==='api').every(c=>!JSON.stringify(c).includes(good.key)),'Callback secret excluded from server');
 + const id='12345678-1234-1234-1234-123456789abc';x=setup({connection:null,callback:{...good,state:'b'.repeat(64)},elementor:true,kit:id});await new Promise(resolve=>setImmediate(resolve));await new Promise(resolve=>setImmediate(resolve));check(x.calls.some(c=>c.kind==='wp'&&c.path===good.endpoint),'Selected kit automatically published after approval');check(!x.saved.has('fontready.pending-publish'),'Approval resumes only once');
++ x=setup({elementor:true});await new Promise(resolve=>setImmediate(resolve));x.listeners['fontready:kit']();await new Promise(resolve=>setImmediate(resolve));check(x.calls.some(c=>c.kind==='wp'&&c.path===good.endpoint),'New upload auto-publishes to connected Elementor site');check(x.nodes['elementor-progress'].value===4,'Publishing completion updates progress');const before=x.calls.length;x.listeners['fontready:kit']();await new Promise(resolve=>setImmediate(resolve));check(x.calls.length===before,'Completed kit is not automatically published twice');
   const order=[];const callbackContext={location:{hash:'#fontready='+encodeURIComponent(JSON.stringify(good)),pathname:'/font-to-elementor-pro/',search:''},history:{replaceState(){order.push('stripped')}},window:{},JSON,decodeURIComponent};vm.runInNewContext(fs.readFileSync('static/wordpress-callback.js','utf8'),callbackContext);check(order[0]==='stripped'&&callbackContext.window.fontreadyCallback.key===good.key,'Fragment stripped synchronously');
   console.log(`Passed ${checks} seamless publishing UI contract checks.`);
  })().catch(e=>{console.error(e);process.exit(1)});
@@ -334,10 +644,10 @@ index 0d6177f..c5cad83 100644
 +(output/'elementor').mkdir(exist_ok=True)
 +(output/'elementor'/'index.html').write_text(markup)
 diff --git a/static/app.css b/static/app.css
-index e371679..429ece0 100644
+index e371679..045b84c 100644
 --- a/static/app.css
 +++ b/static/app.css
-@@ -48,3 +48,7 @@
+@@ -48,3 +48,9 @@
  @media(max-width:600px) { .wordpress-publish { padding:16px; } }
  
  .elementor-nav{color:var(--purple,#7357df)!important;white-space:nowrap}.elementor-connect{display:grid;grid-template-columns:1.25fr 1fr;gap:60px;padding:65px 0 35px}.elementor-connect h1{font-size:64px;letter-spacing:-3px;line-height:1.08;margin:18px 0}.elementor-connect ol{padding-left:20px;line-height:1.9;color:var(--muted,#7d7c87)}.connect-card{background:var(--card,#fff);border:1px solid var(--line,#e9e8ef);border-radius:24px;padding:30px;align-self:center}.connect-card>label{display:block;margin:15px 0;font-size:13px}.connect-card input[type=url]{width:100%;padding:13px;border:1px solid var(--line,#e9e8ef);border-radius:10px;background:var(--card,#fff);color:inherit}.connect-card .primary-button{width:100%;margin:12px 0}.connect-card .muted{font-size:11px;line-height:1.7}.header nav{flex-wrap:wrap;gap:16px}@media(max-width:800px){.elementor-connect{grid-template-columns:1fr;gap:25px}.elementor-connect h1{font-size:46px}.header{flex-wrap:wrap;gap:20px}.header nav{width:100%;justify-content:space-between}}
@@ -345,23 +655,93 @@ index e371679..429ece0 100644
 +.elementor-heading{padding:48px 0 24px}.elementor-heading h1{font-size:48px;line-height:1.1;letter-spacing:-2px;margin:18px 0}.flow-steps{display:flex;gap:20px;list-style:none;padding:0;font-size:12px;color:#7357df;margin:28px 0}#website-confirmation>label{display:block;font-size:13px;margin:16px 0}#wordpress-site{width:100%;padding:14px;border:1px solid var(--line,#e9e8ef);border-radius:10px;background:var(--card,#fff);color:inherit}#elementor-publish-panel{scroll-margin-top:30px}#elementor-publish-panel>.primary-button{margin:18px 0}#elementor-manage{display:inline-block}#elementor-manage[hidden]{display:none}body[data-elementor] .font-guide .format-comparison,body[data-elementor] .font-guide>.formats-heading{display:none}@media(max-width:700px){.elementor-heading h1{font-size:34px}.flow-steps{gap:12px;flex-wrap:wrap}}
 +
 +body[data-elementor] .tip-card{display:none}
++
++body[data-elementor="true"] .workspace{grid-template-columns:minmax(0,1fr);max-width:900px;margin:0 auto}body[data-elementor="true"] .side-column,body[data-elementor="true"] .preview-toggle{display:none}body[data-elementor="true"] .settings-card .convert-row{margin-top:16px}#elementor-progress{width:100%;height:12px;accent-color:var(--accent,#7453eb);margin:16px 0}.owner-link{font-size:12px;opacity:.7}
 diff --git a/static/app.js b/static/app.js
-index 6912ec7..c2be8d2 100644
+index 6912ec7..132948c 100644
 --- a/static/app.js
 +++ b/static/app.js
-@@ -92,6 +92,11 @@ function poll(id) {
+@@ -1,14 +1,15 @@
+ /* UI previews are explicitly separate from the real Django conversion API. */
+ const $ = id => document.getElementById(id);
++const elementorMode = document.body.dataset.elementor === 'true';
+ const previewOnly = document.body.dataset.preview === 'true';
+ let files = [], activeJob = null, busy = false, previewNames = new Map(), previewGeneration = 0;
+ let polling = null, researchPolling = null, previewOpen=false;
+ const bytes = n => n >= 1048576 ? `${(n / 1048576).toFixed(2)} MB` : `${(n / 1024).toFixed(1)} KB`;
+ function element(tag, text, cls) { const el = document.createElement(tag); if (text !== undefined) {el.textContent = t(text);if(text!==t(text))el.dataset.i18n=text;} if (cls) el.className = cls; return el; }
+-function message(text, error = false) { $('message').textContent = t(text); $('message').className = error ? 'error' : ''; $('message').hidden = false; }
++function message(text, error = false) { if(elementorMode && $('elementor-progress')){ const p=$('elementor-progress'); if(error)p.value=0; else if(text.includes('ready'))p.value=3; else if(text.includes('Converting'))p.value=2; else p.value=1; } $('message').textContent = t(text); $('message').className = error ? 'error' : ''; $('message').hidden = false; }
+ function csrf() { return document.cookie.split('; ').find(x => x.startsWith('csrftoken='))?.split('=').slice(1).join('=') || ''; }
+ async function api(path, options = {}) { const response = await fetch(path, {credentials:'same-origin', ...options}); const data = await response.json().catch(() => ({error:'The server returned an unexpected response.'})); if (!response.ok) throw new Error(data.error || 'The request failed. Please try again.'); return data; }
+-function updateButton() { const formats = document.querySelectorAll('input[name="format"]:checked'); $('convert').disabled = busy || !files.length || !formats.length; $('convert').textContent = busy ? t('Converting…') : t('Convert fonts ↗'); $('selection-info').textContent = files.length ? t('{count} fonts · {size} selected').replace('{count}',files.length).replace('{size}',bytes(files.reduce((sum,f)=>sum+f.size,0))) : t('Your website-ready kit is one step away.'); }
++function updateButton() { const formats = document.querySelectorAll('input[name="format"]:checked'); $('convert').disabled = busy || !files.length || (!elementorMode && !formats.length); $('convert').textContent = busy ? t('Converting…') : t('Convert fonts ↗'); $('selection-info').textContent = files.length ? t('{count} fonts · {size} selected').replace('{count}',files.length).replace('{size}',bytes(files.reduce((sum,f)=>sum+f.size,0))) : t('Your website-ready kit is one step away.'); }
+ function renderFiles() {
+   $('file-list').replaceChildren();
+   files.forEach((file, i) => { const row = element('div', undefined, 'file-row'); row.append(element('span','Aa','file-icon')); const description = element('div', undefined, 'file-description'); description.append(element('div', file.name, 'file-name'), element('div', `${file.name.split('.').pop().toUpperCase()} · ${bytes(file.size)}`, 'file-size')); row.append(description); const remove = element('button','×','remove-file'); remove.type = 'button'; remove.setAttribute('aria-label', `Remove ${file.name}`); remove.disabled = busy; remove.onclick = () => { files.splice(i, 1); renderFiles(); loadPreviews(); }; row.append(remove); $('file-list').append(row); });
+@@ -16,9 +17,11 @@ function renderFiles() {
+ }
+ function addFiles(incoming) {
+   if (busy) return message('Please wait for this conversion to finish.', true);
++  if(elementorMode){if(incoming.length!==1)return message('Upload one font at a time for Elementor.',true);files=[];}
+   let errors = [];
+-  for (const file of incoming) { if (!/\.(ttf|otf|woff|woff2)$/i.test(file.name)) {errors.push(`${file.name}: unsupported file type.`); continue;} if (!file.size || file.size > 5 * 1048576) { errors.push(`${file.name}: choose a file under 5 MB.`); continue; } if (files.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) continue; if (files.length >= 10 || files.reduce((s,f)=>s+f.size,0) + file.size > 25*1048576) { errors.push('Maximum 10 files and 25 MB per batch.'); break; } files.push(file); }
++  for (const file of incoming) { if (!/\.(ttf|otf|woff|woff2)$/i.test(file.name)) {errors.push(`${file.name}: unsupported file type.`); continue;} if (!file.size || file.size > 5 * 1048576) { errors.push(`${file.name}: choose a file under 5 MB.`); continue; } if (files.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) continue; if (files.length >= (elementorMode ? 1 : 10) || files.reduce((s,f)=>s+f.size,0) + file.size > 25*1048576) { errors.push(elementorMode ? 'Upload one font at a time for Elementor.' : 'Maximum 10 files and 25 MB per batch.'); break; } files.push(file); }
+   $('message').hidden = !errors.length; if (errors.length) message(errors.join(' '), true); renderFiles(); loadPreviews();
++  if(elementorMode && files.length && !errors.length) setTimeout(()=>{if(!busy) $('convert').onclick();},0);
+ }
+ async function loadPreviews() {
+   if(!previewOpen)return;
+@@ -60,12 +63,12 @@ $('theme').onclick = () => {document.body.classList.toggle('dark');saveTheme(doc
+ $('convert').onclick = async () => {
+   if (previewOnly) return message('This is the interface preview. Real conversion runs in the local Django app or Lightsail staging.', true);
+   busy = true; renderFiles(); window.trackFontReady?.('conversion_started',{file_count:files.length}); message('Your fonts are in the conversion queue.');
+-  const data = new FormData(); files.forEach(f=>data.append('fonts',f)); document.querySelectorAll('input[name="format"]:checked').forEach(i=>data.append('formats',i.value)); data.append('characters',$('characters').value); data.append('font_display',$('font-display').value);
++  const data = new FormData(); files.forEach(f=>data.append('fonts',f)); (elementorMode ? ['woff2','woff','ttf','svg','eot'] : [...document.querySelectorAll('input[name="format"]:checked')].map(i=>i.value)).forEach(f=>data.append('formats',f)); if(elementorMode)data.append('profile','elementor'); data.append('characters',$('characters').value); data.append('font_display',$('font-display').value);
+   try {
+     const configuration=await api('/api/conversions/');
+     let job;
+     if(configuration.upload_mode==='direct'){
+-      const prepared=await api('/api/uploads/',{method:'POST',headers:{'X-CSRFToken':csrf(),'Content-Type':'application/json'},body:JSON.stringify({files:files.map(f=>({name:f.name,size:f.size})),formats:data.getAll('formats'),characters:$('characters').value,font_display:$('font-display').value})});
++      const prepared=await api('/api/uploads/',{method:'POST',headers:{'X-CSRFToken':csrf(),'Content-Type':'application/json'},body:JSON.stringify({files:files.map(f=>({name:f.name,size:f.size})),formats:data.getAll('formats'),profile:elementorMode?'elementor':'general',characters:$('characters').value,font_display:$('font-display').value})});
+       message('Uploading your fonts…');
+       try{
+         // Two uploads at a time keeps browser memory and network use bounded.
+@@ -88,10 +91,14 @@ $('convert').onclick = async () => {
+ };
+ function poll(id) {
+   clearTimeout(polling);
+-  const tick = async () => {try {const job=await api(`/api/conversions/${id}/`); activeJob=job; if (['ready','failed','expired'].includes(job.state)) {busy=false;renderFiles();if(job.state==='ready'){window.trackFontReady?.('conversion_completed',{file_count:job.results.length,output_count:job.results.reduce((n,r)=>n+Object.keys(r.sizes).length,0)});showResult(job);$('result').scrollIntoView({behavior:'smooth',block:'start'});message('Your fonts are ready. Download your kit within 24 minutes.');}else{message(job.error || 'This download has expired.',true);} await refreshHistory();return;} const offline=job.state==='queued' && job.worker_available===false;message(offline?'Conversion is waiting for the processing service. Please try again shortly.':job.state==='processing'?'Converting your fonts and assembling the kit…':'Your fonts are in the conversion queue.',offline);polling=setTimeout(tick,job.state==='processing'?300:500);} catch (error) {busy=false;renderFiles();message(error.message,true);} }; tick();
++  const tick = async () => {try {const job=await api(`/api/conversions/${id}/`); activeJob=job; if (['ready','failed','expired'].includes(job.state)) {busy=false;renderFiles();if(job.state==='ready'){window.trackFontReady?.('conversion_completed',{file_count:job.results.length,output_count:job.results.reduce((n,r)=>n+Object.keys(r.sizes).length,0)});showResult(job);$('result').scrollIntoView({behavior:'smooth',block:'start'});message(elementorMode?'Your font is ready. Confirm your website to publish.':'Your fonts are ready. Download your kit within 24 minutes.');}else{message(job.error || 'This download has expired.',true);} await refreshHistory();return;} const offline=job.state==='queued' && job.worker_available===false;message(offline?'Conversion is waiting for the processing service. Please try again shortly.':job.state==='processing'?'Converting your fonts and assembling the kit…':'Your fonts are in the conversion queue.',offline);polling=setTimeout(tick,job.state==='processing'?300:500);} catch (error) {busy=false;renderFiles();message(error.message,true);} }; tick();
  }
  function showResult(job) {
    activeJob=job; $('result').hidden=false; $('result-files').replaceChildren();
 +  if($('elementor-publish-link')) $('elementor-publish-link').href='/font-to-elementor-pro/?kit='+encodeURIComponent(job.id);
 +  if(document.body.dataset.elementor==='true'){
 +    sessionStorage.setItem('fontready.selected-kit',job.id);
-+    window.dispatchEvent(new CustomEvent('fontready:kit', {detail:job}));
 +  }
    if($('wordpress-review')){
      $('wordpress-status').textContent='';
      $('wordpress-review').textContent=job.results.map(f=>`${f.family} · ${f.weight} · ${f.style}`).join(' / ');
-@@ -182,7 +187,7 @@ $('copy-css').onclick = ()=>copy(activeJob?.css || '', 'CSS');
+@@ -101,6 +108,7 @@ function showResult(job) {
+     const heading=element('div',undefined,'result-font-heading');
+     heading.append(element('b',result.metadata?.fields?.full_name || result.family),element('small',`${result.weight} · ${result.style} · ${t('Original')} ${bytes(result.original_size)}`));
+     row.append(heading);
++    if(elementorMode){row.append(element('p','Prepared for Elementor. WOFF2, WOFF, TTF, SVG and EOT are prepared together in one font variant.','muted'));$('result-files').append(row);continue;}
+     const grid=element('div',undefined,'download-grid');
+     const requested=job.requested_formats?.length?job.requested_formats:Object.keys(result.sizes);
+     for(const format of ['woff2','woff','ttf','otf','svg'].filter(f=>requested.includes(f)||f in result.sizes)){
+@@ -127,7 +135,8 @@ function showResult(job) {
+     }
+     $('result-files').append(row);
+   }
+-  $('css-code').textContent=job.css;$('download').href=job.download_url || '#'; updateCountdown();renderInfo(job);watchResearch(job);
++  if(elementorMode){const button=$('wordpress-publish');if(button){button.hidden=sessionStorage.getItem('fontready.last-published')===job.id;button.textContent='Publish to Elementor Pro website ↗';}window.dispatchEvent(new CustomEvent('fontready:kit',{detail:job}));}
++  $('css-code').textContent=job.css;$('download').href=job.download_url || '#'; updateCountdown();if(!elementorMode){renderInfo(job);watchResearch(job);}
+ }
+ function updateCountdown() {if(!activeJob || !$('result') || $('result').hidden)return;const left=Math.max(0,Math.floor((new Date(activeJob.expires_at)-Date.now())/1000));$('countdown').textContent=left ? `${String(Math.floor(left/60)).padStart(2,'0')}:${String(left%60).padStart(2,'0')} ${t('remaining')}` : t('Download expired');$('download').hidden=!left;$('copy-link').hidden=!left;$('info-download').hidden=!left;document.querySelectorAll('.font-download').forEach(link=>{link.hidden=!left;});if(!left)clearTimeout(researchPolling);}
+ setInterval(updateCountdown,1000);
+@@ -182,7 +191,7 @@ $('copy-css').onclick = ()=>copy(activeJob?.css || '', 'CSS');
  $('copy-link').onclick = ()=>{if(activeJob?.download_url)copy(new URL(activeJob.download_url,location.origin).href, 'Download link');};
  const instructions={css:['Extract your kit and upload the fonts/ folder alongside stylesheet.css.','Add <link rel="stylesheet" href="/path/to/stylesheet.css"> to your page.','Set font-family to the family name shown in your generated CSS.'],elementor:['Open WordPress → Elementor → Custom Fonts in an installation that supports this feature.','Add a family and upload each font file with its matching weight and style.','Select your custom family in the Typography controls, then check the published page.'],next:['Copy the converted files into your Next.js project, such as app/fonts/.','Use next/font/local with each file’s path, weight and style.','Apply the returned className to the element or layout that should use your font.']};
  function installTab(key) {$('install-content').replaceChildren();const list=element('ol');(localizedInstructions[interfaceLanguage]?.[['css','elementor','next'].indexOf(key)] || instructions[key]).forEach(text=>list.append(element('li',text)));$('install-content').append(list);document.querySelectorAll('[data-tab]').forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.tab===key)));}
@@ -370,7 +750,7 @@ index 6912ec7..c2be8d2 100644
  if(previewOnly){$('preview-banner').hidden=false;$('ai-help').textContent=t('Automatic Gemini information is available in the configured Django app.');}
  
  let fontDetailsOpen=false;
-@@ -254,7 +259,7 @@ function setLanguage(code){
+@@ -254,7 +263,7 @@ function setLanguage(code){
    renderFact();
    if(!sampleEdited)$('preview-text').value=sampleText();
    $('characters').placeholder=t('Leave blank to keep every character');
@@ -380,18 +760,20 @@ index 6912ec7..c2be8d2 100644
    if(!previewOnly)refreshHistory();
  }
 diff --git a/static/wordpress.js b/static/wordpress.js
-index 578f2b7..24e88e8 100644
+index 578f2b7..dc157ae 100644
 --- a/static/wordpress.js
 +++ b/static/wordpress.js
-@@ -1,7 +1,7 @@
+@@ -1,8 +1,8 @@
  /* Opaque authentication stays in this browser tab; the user never copies a key. */
  (() => {
    const get = id => document.getElementById(id);
 -  const storageKey = 'fontready.website.v2';
+-  let connection = null, publishing = false;
 +  const storageKey = 'fontready.website.v3';
-   let connection = null, publishing = false;
++  let connection = null, publishing = false, restoring = true;
    const message = (text, error = false, id = 'connection-status') => {
      const element = get(id) || get('wordpress-status');
+     if (element) { element.textContent = text; element.className = error ? 'error' : ''; }
 @@ -28,21 +28,34 @@
    const showConnection = () => {
      if (connection) {
@@ -442,7 +824,7 @@ index 578f2b7..24e88e8 100644
        const response = await fetch(candidate.status, {credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${candidate.key}`}});
        if (!response.ok) throw new Error('WordPress could not confirm your connection. Check Elementor Pro and reconnect.');
        const status = await response.json();
-+      if (status.native_custom_fonts !== true) throw new Error('Update the FontReady plugin to version 0.3.0 before publishing to Elementor Custom Fonts.');
++      if (status.native_custom_fonts !== true || status.multi_format_import !== true) throw new Error('Update the FontReady plugin to version 0.4.0 before publishing the complete Elementor font set.');
        if (status.elementor_pro !== true || new URL(status.site).href !== new URL(candidate.site).href) throw new Error('WordPress could not confirm this website.');
 -      await api('/api/wordpress/complete/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({state:callback.state,requested_site:requested,site:status.site,families:status.families,variants:status.variants})});
 +      const paired = await api('/api/wordpress/complete/', {method:'POST',headers:{'Content-Type':'application/json','X-CSRFToken':csrf()},body:JSON.stringify({state:callback.state,requested_site:requested,site:status.site,families:status.families,variants:status.variants})});
@@ -454,9 +836,9 @@ index 578f2b7..24e88e8 100644
 -    } catch (error) { message(error.message, true); }
 +      const job = await restoreKit();
 +      if (job && paired.job === job.id && sessionStorage.getItem('fontready.pending-publish') === job.id) { sessionStorage.removeItem('fontready.pending-publish'); await publish.onclick(); }
-+    } catch (error) { await restoreKit(); message(error.message, true); }
++    } catch (error) { await restoreKit(); message(error.message, true); } finally { restoring=false; }
    })();
-+  else restoreKit();
++  else restoreKit().finally(()=>{restoring=false;});
    if (get('wordpress-disconnect')) get('wordpress-disconnect').onclick = () => {
      if (publishing) return;
 -    clear(); message('Disconnected from this browser. You can disconnect all access in WordPress → FontReady.');
@@ -464,7 +846,7 @@ index 578f2b7..24e88e8 100644
    };
    const publish = get('wordpress-publish');
    if (!publish) return;
-@@ -73,12 +90,16 @@
+@@ -73,16 +90,21 @@
      if (publishing) return;
      const status = (text, error=false) => message(text,error,'wordpress-status');
      if (previewOnly) return status('Publishing is available in the running FontReady application.',true);
@@ -478,25 +860,40 @@ index 578f2b7..24e88e8 100644
 +      const probe = await fetch(connection.status,{credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(20000),headers:{Authorization:`Bearer ${connection.key}`}});
 +      const capability = await probe.json().catch(()=>null);
 +      if (!probe.ok) { if(probe.status===401)clear(); throw new Error(capability?.message || 'Reconnect your WordPress website.'); }
-+      if (capability?.native_custom_fonts !== true || capability?.elementor_pro !== true) throw new Error('Custom Fonts publishing is unavailable. Update FontReady and check Elementor Pro before publishing.');
++      if (capability?.native_custom_fonts !== true || capability?.elementor_pro !== true || capability?.multi_format_import !== true) throw new Error('Update FontReady to 0.4.0 and check Elementor Pro before publishing all font formats.');
        const host = new URL(connection.site).host;
-       status(`Installing fonts on ${host}…`);
+-      status(`Installing fonts on ${host}…`);
++      status(`Preparing all Elementor font files for ${host}…`);
        const payload = await api(`/api/conversions/${job.id}/wordpress/`, {method:'POST',headers:{'X-CSRFToken':csrf()},signal:AbortSignal.timeout(120000)});
-@@ -90,7 +111,8 @@
+       if (activeJob?.id !== job.id) throw new Error('The active kit changed. Review it and install again.');
++      status(`Publishing your font files to ${host}…`);
+       const response = await fetch(connection.endpoint,{method:'POST',credentials:'omit',redirect:'error',referrerPolicy:'no-referrer',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${connection.key}`},body:JSON.stringify(payload)});
+       const data = await response.json().catch(()=>null);
+       if (!response.ok) {
+@@ -90,9 +112,17 @@
          throw new Error(data?.message || `WordPress returned ${response.status}. Check your website and try again.`);
        }
        if (!Array.isArray(data?.families) || !Number.isInteger(data?.imported)) throw new Error('Check WordPress → FontReady to confirm the installation before retrying.');
 -      status(`Installed on ${host}: ${data.families.join(', ')}. Refresh Elementor and select your font under FontReady.`);
 +      status(`Published to Elementor Custom Fonts on ${host}: ${data.families.join(', ')}. Refresh the Elementor editor to use them.`);
++      sessionStorage.setItem('fontready.last-published',job.id);
++      if(get('elementor-progress'))get('elementor-progress').value=4;
++      publish.textContent='Published ✓';publish.hidden=true;
++      if(Array.isArray(data.formats)) status(`Published ${data.families.join(', ')} to ${host}. Installed formats: ${data.formats.map(f=>f.toUpperCase()).join(', ')}.`);
 +      if (get('elementor-manage') && data.manage_url) { const url = new URL(data.manage_url); if(url.origin === new URL(connection.site).origin && url.protocol==='https:') { get('elementor-manage').href=url.href;get('elementor-manage').hidden=false; } }
        api(`/api/conversions/${job.id}/published/`,{method:'POST',headers:{'X-CSRFToken':csrf()}}).catch(()=>{});
      } catch (error) { status(error.message || 'Check WordPress → FontReady before retrying.',true); }
      finally { publishing=false; publish.disabled=false; }
+   };
++  window.addEventListener?.('fontready:kit', () => {
++    if(document.body.dataset.elementor==='true' && !restoring && connection && activeJob?.state==='ready' && sessionStorage.getItem('fontready.last-published')!==activeJob.id) publish.onclick();
++  });
+ })();
 diff --git a/templates/index.html b/templates/index.html
-index 86ad04a..6bff48f 100644
+index 86ad04a..d18e426 100644
 --- a/templates/index.html
 +++ b/templates/index.html
-@@ -23,7 +23,7 @@
+@@ -23,19 +23,16 @@
    <script src="{% static 'app.js' %}" defer></script>
    <script src="{% static 'wordpress.js' %}" defer></script>
  </head>
@@ -505,7 +902,8 @@ index 86ad04a..6bff48f 100644
    <div class="preview-banner" id="preview-banner" hidden data-i18n="Interface preview · Files stay in your browser here. Run the Django app for real conversion and downloads.">Interface preview · Files stay in your browser here. Run the Django app for real conversion and downloads.</div>
    <header class="header shell">
      <a class="brand" href="/" aria-label="FontReady home"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="M11 29V11h16v5H16v4h8v5h-8v4Z" fill="currentColor"/><path d="m24 29 3 3 7-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="brand-name">Font<span>Ready</span></span><span class="beta">BETA</span></a>
-@@ -31,11 +31,8 @@
+-    <nav aria-label="Main navigation"><a href="#workspace" data-i18n="Converter">Converter</a><a class="elementor-nav" href="/font-to-elementor-pro/">Font to Elementor Pro ↗</a><a href="#installation" data-i18n="How to use">How to use</a><label class="language-control"><span class="sr-only" data-i18n="Language">Language</span><select id="site-language" aria-label="Language"><option value="en">English</option><option value="es">Español</option><option value="ru">Русский</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt">Português</option></select></label><button id="theme" class="icon-button" aria-label="Toggle dark mode">◐</button></nav>
++    <nav aria-label="Main navigation"><a href="#workspace" data-i18n="Converter">Converter</a><a class="elementor-nav" href="/font-to-elementor-pro/">Font to Elementor Pro ↗</a>{% if elementor_page %}<a href="#elementor-publish-panel">Publish</a>{% else %}<a href="#installation" data-i18n="How to use">How to use</a>{% endif %}<label class="language-control"><span class="sr-only" data-i18n="Language">Language</span><select id="site-language" aria-label="Language"><option value="en">English</option><option value="es">Español</option><option value="ru">Русский</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt">Português</option></select></label><button id="theme" class="icon-button" aria-label="Toggle dark mode">◐</button></nav>
    </header>
    <main class="shell">
      {% if elementor_page %}
@@ -514,7 +912,7 @@ index 86ad04a..6bff48f 100644
 -      <div class="connect-card"><h2>Connect your website</h2><label for="wordpress-site">Website URL</label><input id="wordpress-site" type="url" placeholder="https://yourwebsite.com" autocomplete="url"><label class="wordpress-license"><input id="wordpress-pro" type="checkbox"> I confirm Elementor Pro is installed on this website.</label><button id="wordpress-connect" class="primary-button" type="button">Continue to WordPress ↗</button><p id="connection-status" role="status" aria-live="polite"></p><button id="wordpress-disconnect" class="text-button" type="button">Disconnect this browser</button><p class="muted">Connecting shares your domain and font installation totals with FontReady. No account needed. <a href="/privacy/">Privacy details</a>.</p></div>
 -    </section>
 -    {% endif %}
-+    <section class="elementor-heading"><p class="eyebrow">FONTREADY FOR ELEMENTOR PRO</p><h1>Convert. Publish. Keep designing.</h1><p>Turn your fonts into web-ready files and publish them to Elementor’s Custom Fonts.</p><ol class="flow-steps"><li>1 · Convert your fonts</li><li>2 · Confirm your website</li><li>3 · Publish to Custom Fonts</li></ol></section>
++    <section class="elementor-heading"><p class="eyebrow">FONTREADY FOR ELEMENTOR PRO</p><h1>Convert. Publish. Keep designing.</h1><p>Upload your font. We prepare the files and publish them to your website’s Elementor Custom Fonts.</p><ol class="flow-steps"><li>1 · Upload your font</li><li>2 · Confirm your website</li><li>3 · Publish to Custom Fonts</li></ol></section>
 +    {% else %}
      <section class="hero">
        <div class="eyebrow"><span class="eyebrow-dot" aria-hidden="true"></span> <span data-i18n="A SMALL TOOL FOR BETTER TYPOGRAPHY">A SMALL TOOL FOR BETTER TYPOGRAPHY</span></div>
@@ -527,11 +925,28 @@ index 86ad04a..6bff48f 100644
      <div class="workspace" id="workspace" data-clarity-mask="true">
        <div class="main-column">
          <div class="upload-preview" id="upload-preview">
-@@ -66,14 +64,14 @@ everything feel different.</textarea>
+@@ -51,8 +49,8 @@
+           <div class="dropzone" id="dropzone">
+             <span class="upload-icon" aria-hidden="true">↑</span><h3 data-i18n="Drop your fonts here">Drop your fonts here</h3>
+             <p><span data-i18n="or">or</span> <button type="button" class="text-button" id="browse" data-i18n="browse files">browse files</button> <span data-i18n="from your device">from your device</span></p>
+-            <span class="muted" data-i18n="Up to 10 files · 5 MB each · 25 MB total">Up to 10 files · 5 MB each · 25 MB total</span>
+-            <input type="file" id="files" multiple accept=".ttf,.otf,.woff,.woff2" hidden>
++            {% if elementor_page %}<span class="muted">One font · up to 5 MB · TTF, OTF, WOFF or WOFF2</span>{% else %}<span class="muted" data-i18n="Up to 10 files · 5 MB each · 25 MB total">Up to 10 files · 5 MB each · 25 MB total</span>{% endif %}
++            <input type="file" id="files" {% if not elementor_page %}multiple{% endif %} accept=".ttf,.otf,.woff,.woff2" hidden>
+           </div>
+           <div id="file-list" class="file-list" data-clarity-mask="true"></div>
+           <div class="upload-bottom"><span data-i18n="Only upload fonts you have permission to use on the web.">Only upload fonts you have permission to use on the web.</span><button id="clear" class="text-button" hidden data-i18n="Clear all">Clear all</button></div>
+@@ -66,35 +64,55 @@ everything feel different.</textarea>
          </section>
          </div>
          <section class="card settings-card">
 -          <div class="card-heading"><h2><span class="step">02</span><span data-i18n="Choose your output">Choose your output</span></h2><span class="muted" data-i18n="Five formats. One kit.">Five formats. One kit.</span></div>
++          {% if elementor_page %}
++          <div class="card-heading"><h2><span class="step">02</span>Preparing your font</h2></div>
++          <p class="muted">Upload a TTF, OTF, WOFF or WOFF2 font. We prepare the Elementor files automatically.</p>
++          <progress id="elementor-progress" aria-label="Font conversion progress" max="4" value="0"></progress>
++          <input id="font-display" type="hidden" value="swap"><textarea id="characters" hidden></textarea><span id="ai-help" hidden></span>
++          {% else %}
 +          <div class="card-heading"><h2><span class="step">02</span><span data-i18n="Choose your output">Choose your output</span></h2>{% if elementor_page %}<span class="muted">Ready for Elementor Pro.</span>{% else %}<span class="muted" data-i18n="Five formats. One kit.">Five formats. One kit.</span>{% endif %}</div>
            <fieldset class="output-panel"><legend data-i18n="Output formats">Output formats</legend><div class="formats">
              <label class="format"><input type="checkbox" name="format" value="woff2" checked><span><b>WOFF2</b><small data-i18n="Recommended">Recommended</small></span></label>
@@ -545,13 +960,23 @@ index 86ad04a..6bff48f 100644
            <div class="settings-bottom">
              <div class="display-setting"><label class="field-label" for="font-display" data-i18n="Font loading behaviour">Font loading behaviour</label><select id="font-display"><option value="swap" data-i18n="Swap — show text while loading">Swap — show text while loading</option><option value="optional" data-i18n="Optional">Optional</option><option value="fallback" data-i18n="Fallback">Fallback</option><option value="block" data-i18n="Block">Block</option><option value="auto" data-i18n="Auto">Auto</option></select><p class="muted" data-i18n="Controls how text appears while a web font loads.">Controls how text appears while a web font loads.</p></div>
              <div class="subset-setting"><label class="field-label" for="characters"><span data-i18n="Characters to keep">Characters to keep</span> <span class="muted" data-i18n="Optional">Optional</span></label><textarea id="characters" rows="2" maxlength="10000" placeholder="Leave blank to keep every character"></textarea><p class="muted" data-i18n="Enter specific characters for a smaller font file.">Enter specific characters for a smaller font file.</p></div>
-@@ -87,13 +85,26 @@ everything feel different.</textarea>
+           </div>
+           <div class="automatic-info"><span class="info-spark" aria-hidden="true">✦</span><div><b data-i18n="Font information, automatically">Font information, automatically</b><p id="ai-help" class="muted" data-i18n="Embedded details are included. Available Gemini research is reused from our font database.">Embedded details are included. Available Gemini research is reused from our font database.</p></div><span class="auto-badge">AUTO</span></div>
+-<div class="convert-row"><span id="selection-info" data-i18n="Your website-ready kit is one step away.">Your website-ready kit is one step away.</span><button id="convert" class="primary-button" disabled>Convert fonts <span>↗</span></button></div>
++          {% endif %}
++<div class="convert-row"><span id="selection-info" data-i18n="Your website-ready kit is one step away.">Your website-ready kit is one step away.</span><button id="convert" class="primary-button" {% if elementor_page %}hidden{% endif %} disabled>Convert fonts <span>↗</span></button></div>
+           <p id="message" role="status" aria-live="polite" hidden></p>
+         </section>
+         <section class="card result-card" id="result" hidden>
+           <div class="card-heading"><h2><span data-i18n="Your kit is ready">Your kit is ready</span> <span class="success-dot">✓</span></h2><span class="countdown" id="countdown"></span></div>
            <div id="result-files"></div>
-           <div class="result-actions"><a id="download" class="primary-button" href="#" data-i18n="Download kit ↓">Download kit ↓</a><button id="copy-link" class="secondary-button" data-i18n="Copy download link">Copy download link</button></div>
-           <p class="muted" data-i18n="Includes fonts, stylesheet.css, preview.html and README.txt.">Includes fonts, stylesheet.css, preview.html and README.txt.</p>
+-          <div class="result-actions"><a id="download" class="primary-button" href="#" data-i18n="Download kit ↓">Download kit ↓</a><button id="copy-link" class="secondary-button" data-i18n="Copy download link">Copy download link</button></div>
+-          <p class="muted" data-i18n="Includes fonts, stylesheet.css, preview.html and README.txt.">Includes fonts, stylesheet.css, preview.html and README.txt.</p>
 -          <section class="wordpress-publish" aria-labelledby="wordpress-title" data-clarity-mask="true">
 -            <h3 id="wordpress-title">Install in Elementor Pro</h3>
 -            <p>Your connected website is ready. Review your fonts, then install them in one click.</p>
++          <div class="result-actions" {% if elementor_page %}hidden{% endif %}><a id="download" class="primary-button" href="#" data-i18n="Download kit ↓">Download kit ↓</a><button id="copy-link" class="secondary-button" data-i18n="Copy download link">Copy download link</button></div>
++          <p class="muted" {% if elementor_page %}hidden{% endif %} data-i18n="Includes fonts, stylesheet.css, preview.html and README.txt.">Includes fonts, stylesheet.css, preview.html and README.txt.</p>
 +          {% if elementor_page %}
 +          <section class="wordpress-publish" id="elementor-publish-panel" aria-labelledby="wordpress-title" data-clarity-mask="true">
 +            <h3 id="wordpress-title">Publish to your Elementor Pro website</h3>
@@ -570,13 +995,15 @@ index 86ad04a..6bff48f 100644
 +            <a id="elementor-manage" class="secondary-button" hidden target="_blank" rel="noopener noreferrer">Open Elementor Custom Fonts ↗</a>
 +            <p class="muted">You’ll approve through your WordPress administrator account. Connecting shares your domain and installation totals. <a href="/privacy/">Privacy details</a>.</p>
            </section>
+-          <div class="font-info-heading"><h3 data-i18n="About your fonts">About your fonts</h3><div class="font-info-actions"><button id="toggle-font-details" class="text-button" type="button" aria-expanded="false" aria-controls="font-info" data-i18n="Show details">Show details</button><a id="info-download" class="text-button" href="#" data-i18n="Information JSON ↓">Information JSON ↓</a></div></div><p class="muted" id="research-status"></p><div id="font-info"></div><div class="code-heading"><b data-i18n="Your @font-face CSS">Your @font-face CSS</b><button class="text-button" id="copy-css" data-i18n="Copy CSS">Copy CSS</button></div><pre id="css-code"></pre>
 +          {% else %}
 +          <a id="elementor-publish-link" class="secondary-button" href="/font-to-elementor-pro/">Publish to Elementor Pro website ↗</a>
 +          {% endif %}
-           <div class="font-info-heading"><h3 data-i18n="About your fonts">About your fonts</h3><div class="font-info-actions"><button id="toggle-font-details" class="text-button" type="button" aria-expanded="false" aria-controls="font-info" data-i18n="Show details">Show details</button><a id="info-download" class="text-button" href="#" data-i18n="Information JSON ↓">Information JSON ↓</a></div></div><p class="muted" id="research-status"></p><div id="font-info"></div><div class="code-heading"><b data-i18n="Your @font-face CSS">Your @font-face CSS</b><button class="text-button" id="copy-css" data-i18n="Copy CSS">Copy CSS</button></div><pre id="css-code"></pre>
++          <div {% if elementor_page %}hidden{% endif %}><div class="font-info-heading"><h3 data-i18n="About your fonts">About your fonts</h3><div class="font-info-actions"><button id="toggle-font-details" class="text-button" type="button" aria-expanded="false" aria-controls="font-info" data-i18n="Show details">Show details</button><a id="info-download" class="text-button" href="#" data-i18n="Information JSON ↓">Information JSON ↓</a></div></div><p class="muted" id="research-status"></p><div id="font-info"></div><div class="code-heading"><b data-i18n="Your @font-face CSS">Your @font-face CSS</b><button class="text-button" id="copy-css" data-i18n="Copy CSS">Copy CSS</button></div><pre id="css-code"></pre></div>
          </section>
        </div>
-@@ -102,12 +113,13 @@ everything feel different.</textarea>
+       <aside class="side-column">
+@@ -102,15 +120,16 @@ everything feel different.</textarea>
          <section class="tip-card" id="font-facts" aria-label="Font facts"><span class="tip-label" data-i18n="FONT FACTS">FONT FACTS</span><h3 id="fact-title"></h3><p id="fact-body"></p><div class="fact-controls"><div><button id="fact-previous" type="button" aria-label="Previous font fact">←</button><button id="fact-next" type="button" aria-label="Next font fact">→</button></div></div><span class="tip-symbol" aria-hidden="true">Aa↗</span></section>
        </aside>
      </div>
@@ -592,7 +1019,18 @@ index 86ad04a..6bff48f 100644
 +      {% endif %}<h3 id="questions">{{ seo.faq_heading }}</h3><div class="faq-grid">{% for question, answer in seo.faqs %}<article><h4>{{ question }}</h4><p>{{ answer }}</p></article>{% endfor %}</div>
      </section>
    </main>
-   <footer class="shell"><a href="/privacy/">Privacy</a><a class="brand" href="/">FontReady<span class="brand-footer-dot">.</span></a><span class="developer-credit">{{ seo.credit }} <span aria-hidden="true">♡</span> <a id="developer-credit" href="{{ developer_url }}" rel="noopener" target="_blank">Ademola Alabi</a></span><nav class="footer-languages" aria-label="{{ seo.languages }}">{% for alternate in languages %}<a href="{{ alternate.path }}" lang="{{ alternate.code }}" hreflang="{{ alternate.code }}" {% if alternate.code == language %}aria-current="page"{% endif %}>{{ alternate.name }}</a>{% endfor %}</nav></footer>
+-  <footer class="shell"><a href="/privacy/">Privacy</a><a class="brand" href="/">FontReady<span class="brand-footer-dot">.</span></a><span class="developer-credit">{{ seo.credit }} <span aria-hidden="true">♡</span> <a id="developer-credit" href="{{ developer_url }}" rel="noopener" target="_blank">Ademola Alabi</a></span><nav class="footer-languages" aria-label="{{ seo.languages }}">{% for alternate in languages %}<a href="{{ alternate.path }}" lang="{{ alternate.code }}" hreflang="{{ alternate.code }}" {% if alternate.code == language %}aria-current="page"{% endif %}>{{ alternate.name }}</a>{% endfor %}</nav></footer>
++  <footer class="shell"><a href="/privacy/">Privacy</a><a class="brand" href="/">FontReady<span class="brand-footer-dot">.</span></a><span class="developer-credit">{{ seo.credit }} <span aria-hidden="true">♡</span> <a id="developer-credit" href="{{ developer_url }}" rel="noopener" target="_blank">Ademola Alabi</a></span><nav class="footer-languages" aria-label="{{ seo.languages }}">{% for alternate in languages %}<a href="{{ alternate.path }}" lang="{{ alternate.code }}" hreflang="{{ alternate.code }}" {% if alternate.code == language %}aria-current="page"{% endif %}>{{ alternate.name }}</a>{% endfor %}</nav><a href="/owner/" class="owner-link">Owner dashboard</a></footer>
+ </body>
+ </html>
+ {% endlocalized_page %}
+diff --git a/templates/owner/login.html b/templates/owner/login.html
+index 3e442eb..dda7212 100644
+--- a/templates/owner/login.html
++++ b/templates/owner/login.html
+@@ -1 +1 @@
+-{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>FontReady · Owner sign in</title><link rel="stylesheet" href="{% static 'app.css' %}"><link rel="stylesheet" href="{% static 'owner.css' %}"></head><body><main class="shell owner login"><a class="brand" href="/">FontReady<span>.</span></a><h1>Owner sign in</h1><p class="muted">Private conversion and website statistics.</p><form method="post">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button class="primary-button">Sign in</button></form></main></body></html>
++{% load static %}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>FontReady · Owner sign in</title><link rel="stylesheet" href="{% static 'app.css' %}"><link rel="stylesheet" href="{% static 'owner.css' %}"></head><body><main class="shell owner login"><a class="brand" href="/">FontReady<span>.</span></a><h1>Owner sign in</h1><p class="muted">Daily conversions, top fonts and connected Elementor websites. Sign in with your FontReady owner account. Your WordPress login is separate.</p><form method="post">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}"><button class="primary-button">Sign in</button></form></main></body></html>
 diff --git a/templates/privacy.html b/templates/privacy.html
 index 8af1511..a524521 100644
 --- a/templates/privacy.html

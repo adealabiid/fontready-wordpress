@@ -3,7 +3,7 @@ Contributors: adealabiid
 Tags: fonts, typography, elementor, custom fonts
 Requires at least: 6.2
 Requires PHP: 7.4
-Stable tag: 0.3.1
+Stable tag: 0.4.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -17,7 +17,7 @@ The dashboard has a connection view and a count of installed font families and v
 FontReady is independent and is not affiliated with or endorsed by Elementor.
 
 == Installation ==
-1. Open https://fontready.com/font-to-elementor-pro/ and convert your fonts. You can also open a ready kit from FontReady’s main converter.
+1. Open https://fontready.com/font-to-elementor-pro/ and upload one font. Conversion starts automatically without format choices. You can also open a ready kit from FontReady’s main converter.
 2. Choose Publish to Elementor Pro website and enter your website URL.
 3. Install and activate Elementor Pro and FontReady if needed. Upload fontready-wordpress.zip in Plugins → Add New → Upload Plugin.
 4. Confirm both plugins are installed and active, then publish.
@@ -43,16 +43,21 @@ No copying, generating or pasting keys is required. Use your existing WordPress 
 Yes. Activate Elementor Pro before connecting. Fonts are created in Elementor Custom Fonts using the installed Elementor font manager.
 
 = Can I install any font? =
-Only install fonts you have permission to use on your website. WOFF2 is preferred. WOFF, TTF and OTF are also supported. SVG is not imported. An OTF-only converted kit is wrapped into WOFF2 by the FontReady service before publishing. Direct OTF REST imports are rejected.
+Only install fonts you have permission to use on your website. Upload TTF, OTF, WOFF or WOFF2. The service prepares WOFF2, WOFF, TTF, SVG and EOT together. These five files occupy one matching weight/style row in Elementor. Direct OTF REST imports are rejected.
 
 == Limits and troubleshooting ==
-Up to 10 faces per import, 5 MB per face, 25 MB total. One preferred output per face is installed. Variable weight ranges are preserved. Identical retries do not duplicate files. Matching family, weight and style replaces the existing variant.
+The Elementor page accepts one uploaded font at a time. Ready kits may contain up to 10 variants, 5 MB per generated file and 25 MB total. All five output formats are installed together. Variable WOFF/WOFF2 ranges are preserved; legacy outline conversion may use a default static instance. Identical retries do not duplicate files. Matching family, weight and style replaces the existing variant.
 
 HTTPS, REST API access and forwarding of the Authorization header are required. Server rules must allow OPTIONS, GET and POST to the FontReady REST routes. CORS allows only https://fontready.com. Both pretty and query-style WordPress REST routes work. PHP post_max_size, memory_limit and proxy limits must accommodate a base64 JSON payload of up to about 36 MB.
 
 If an installation response is lost, check the installed count before retrying. Clear page caches and refresh Elementor after installing. If a terminated PHP process leaves a write lock, deactivate and reactivate the plugin when no imports are running.
 
 == Changelog ==
+
+= 0.4.0 =
+* Publish WOFF2, WOFF, TTF, SVG and EOT into one native Elementor variant.
+* Readable family/weight filenames; secure SVG and EOT validation.
+* Automatic one-upload conversion flow and accurate variant totals.
 
 = 0.3.1 =
 * Correct the Elementor assets-manager lookup for native Custom Fonts publishing.

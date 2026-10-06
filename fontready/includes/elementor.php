@@ -42,16 +42,19 @@ final class FontReady_Elementor {
                 if ( $face['family'] !== $family ) { continue; }
                 if ( $face['format'] === 'otf' ) { throw new RuntimeException( 'Select WOFF2, WOFF or TTF when converting for Elementor Pro. Direct OTF imports are not supported by this adapter.' ); }
                 if ( empty( $face['attachment_id'] ) || get_post_status( $face['attachment_id'] ) !== 'inherit' ) {
-                    $mime = array( 'woff2' => 'font/woff2', 'woff' => 'font/woff', 'ttf' => 'font/ttf' )[ $face['format'] ];
+                    $mime = array( 'woff2' => 'font/woff2', 'woff' => 'font/woff', 'ttf' => 'font/ttf', 'svg' => 'image/svg+xml', 'eot' => 'application/vnd.ms-fontobject' )[ $face['format'] ];
                     $attachment = wp_insert_attachment( array( 'post_title' => $family . ' ' . $face['weight'] . ' ' . $face['style'], 'post_mime_type' => $mime, 'post_status' => 'inherit', 'post_parent' => $post_id ), $face['path'], $post_id, true );
                     if ( is_wp_error( $attachment ) || ! $attachment ) { throw new RuntimeException( 'The font could not be registered in the WordPress media library.' ); }
                     $this->attachments[] = $attachment;
                     $face['attachment_id'] = $attachment;
                 }
                 $face['elementor_post_id'] = $post_id;
-                $rows[] = array( 'font_weight' => $face['weight'], 'font_style' => $face['style'], $face['format'] => array( 'id' => (string) $face['attachment_id'], 'url' => $face['url'] ) );
+                $variant = $face['weight'] . ':' . $face['style'];
+                if ( ! isset( $rows[ $variant ] ) ) { $rows[ $variant ] = array( 'font_weight' => $face['weight'], 'font_style' => $face['style'] ); }
+                $rows[ $variant ][ $face['format'] ] = array( 'id' => (string) $face['attachment_id'], 'url' => $face['url'] );
             }
             unset( $face );
+            $rows = array_values( $rows );
             // Let the installed Elementor implementation generate its native metadata and CSS.
             $this->type->save_meta( $post_id, array( 'font_face' => $rows ) );
             $meta_key = constant( get_class( $this->type ) . '::FONT_META_KEY' );

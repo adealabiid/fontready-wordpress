@@ -22,6 +22,8 @@ function wp_generate_uuid4() { return bin2hex(random_bytes(16)); }
 function wp_delete_file($path) { if(is_file($path))unlink($path); }
 function wp_json_encode($value,$options=0) { return json_encode($value,$options); }
 function esc_url_raw($url) { return $url; }
+function sanitize_title($value){return strtolower(trim(preg_replace('/[^a-z0-9]+/i','-',$value),'-'));}
+function set_url_scheme($url,$scheme){return preg_replace('/^http:/','https:',$url);}
 function wp_style_is(...$args) { return false; }
 function wp_register_style(...$args) {} function wp_enqueue_style(...$args) {}
 function wp_add_inline_style($name,$css) { global $styles; $styles[$name]=$css; }
@@ -95,6 +97,29 @@ if(getenv('ELEMENTOR_PRO_SOURCE')){
  $css=get_post_meta($native_id,NativeCustomFonts::FONT_FACE_META_KEY,true);
  check(strpos($css,"font-family: 'FontReady Test'")!==false&&strpos($css,"format('woff2')")!==false&&strpos($css,"format('truetype')")!==false,'Supplied Elementor generates native font CSS');
 }
+$grouped=array('version'=>1,'fonts'=>$payload['elementor_fonts']);
+$response=FontReady_Plugin::import(new Request($grouped));
+check($response instanceof WP_REST_Response && $response->status===200,'All five formats import');
+$faces=array_values(get_option(FontReady_Plugin::REGISTRY));
+$group=array_values(array_filter($faces,function($face){return $face['family']==='Grouped Format Font';}));
+$rows=get_post_meta($group[0]['elementor_post_id'],NativeCustomFonts::FONT_META_KEY,true);
+check(count($rows)===1,'Five files share one native variant');
+foreach(array('woff2','woff','ttf','svg','eot') as $format){check(isset($rows[0][$format]['url']) && strpos($rows[0][$format]['url'],'https://')===0,'Native slot populated: '.$format);}
+check(preg_match('/grouped-format-font-regular-fontready-[a-f0-9-]+\.woff2$/',$group[0]['url'])===1,'Readable font filename');
+check(FontReady_Plugin::variant_count($faces)===4,'Counts variants rather than format files');
+$registry=get_option(FontReady_Plugin::REGISTRY);$old=$group[0];unset($registry[$old['id']]);$legacy=hash('sha256',$old['family'].'|'.$old['weight'].'|'.$old['style']);$oldpath=$old['path'];$old['path']=dirname($oldpath).'/old-hash-font.woff2';rename($oldpath,$old['path']);$old['url']='https://wordpress.example/uploads/fontready/old-hash-font.woff2';$registry[$legacy]=$old;update_option(FontReady_Plugin::REGISTRY,$registry);
+$response=FontReady_Plugin::import(new Request($grouped));
+check($response instanceof WP_REST_Response&&!isset(get_option(FontReady_Plugin::REGISTRY)[$legacy]),'Old registry migrated');
+check(!file_exists($old['path']),'Old hashed file replaced with readable name');
+$count=count(glob($uploads.'/fontready/*'));FontReady_Plugin::import(new Request($grouped));
+check(count(glob($uploads.'/fontready/*'))===$count,'Five-format retry is idempotent');
+$bad=$grouped['fonts'][3];$bad['data']=base64_encode('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><font id="x"><font-face units-per-em="1000"/></font></svg>');
+check(is_wp_error(fontready_validate_fonts(array('version'=>1,'fonts'=>array($bad)))),'Active SVG rejected');
+$bad['data']=base64_encode('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><font id="x"><font-face units-per-em="1000"/></font></svg>');
+check(is_wp_error(fontready_validate_fonts(array('version'=>1,'fonts'=>array($bad)))),'SVG event handlers rejected');
+$bad=$grouped['fonts'][4];$bad['data']=base64_encode(substr(base64_decode($bad['data']),0,-1));
+check(is_wp_error(fontready_validate_fonts(array('version'=>1,'fonts'=>array($bad)))),'Truncated EOT rejected');
+if(getenv('ELEMENTOR_PRO_SOURCE')){ $css=get_post_meta($group[0]['elementor_post_id'],NativeCustomFonts::FONT_FACE_META_KEY,true); foreach(array('woff2','woff','truetype','svg','embedded-opentype') as $format){check(strpos($css,"format('".$format."')")!==false,'Actual Elementor CSS includes '.$format);} }
 foreach(glob($uploads.'/fontready/*') as $file)unlink($file);
 rmdir($uploads.'/fontready'); rmdir($uploads);
 echo "Passed $checks plugin contract checks.\n";

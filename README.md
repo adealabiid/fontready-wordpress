@@ -1,6 +1,6 @@
 # FontReady for Elementor Pro
 
-Version 0.3.1 publishes families into Elementor Pro’s native Custom Fonts manager, with font variants registered as WordPress media attachments. The FontReady dashboard shows connection status and installed font counts.
+Version 0.4.0 publishes families into Elementor Pro’s native Custom Fonts manager, with font variants registered as WordPress media attachments. The FontReady dashboard shows connection status and installed font counts.
 
 ## User flow
 
@@ -27,3 +27,7 @@ python scripts/build.py
 ```
 
 See [the submission plan](docs/WORDPRESS_ORG_SUBMISSION.md). Do not claim a Tested up to version until it has been tested. The website repository is authoritative for the companion flow; `integration/fontready.patch` is a review reference. GPL-2.0-or-later. Author: Ademola Alabi.
+
+Version 0.4.0 installs WOFF2, WOFF, TTF, SVG and EOT together in one native weight/style row. Readable filenames include family, weight, optional style and a short FontReady suffix. Earlier single-format records migrate on publishing. The companion Elementor page starts conversion on upload without format choices and automatically resumes publishing after approval.
+
+The platform owner dashboard is https://fontready.com/owner/. It uses a separate FontReady superuser login, provisioned in the deployed website service with `python manage.py createsuperuser`; see the website README for production setup.
