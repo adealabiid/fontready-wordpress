@@ -1,6 +1,6 @@
 # FontReady WordPress.org submission plan
 
-Status: submission preparation. Not submitted. Elementor Pro 4.3.1 source contracts pass against the owner-supplied package, including manager lookup, metadata and CSS generation with WordPress APIs stubbed. Live Elementor rendering remains unverified by automated browser testing. Official Plugin Check now runs in `.github/workflows/wordpress-directory.yml`, including runtime checks on WordPress 6.8.3 / PHP 8.3. Check the latest successful run before uploading.
+Status: submission preparation. Not submitted. Elementor Pro 4.3.1 source contracts pass against the owner-supplied package, including manager lookup, metadata and CSS generation with WordPress APIs stubbed. Live Elementor rendering remains unverified by automated browser testing. Official Plugin Check now runs in `.github/workflows/wordpress-directory.yml`, including runtime checks on WordPress 7.1.3 / PHP 8.3. Check the latest successful run before uploading.
 
 ## 1. Finish the release gates
 
@@ -16,7 +16,7 @@ Status: submission preparation. Not submitted. Elementor Pro 4.3.1 source contra
 
 Use the GPL-compatible, readable plugin source and its release ZIP. Keep the plugin name FontReady; confirm slug availability and the submitting WordPress.org account before upload. Keep required Elementor Pro clearly disclosed without impersonating Elementor. No Elementor logo is included.
 
-Validate `readme.txt`. Match its Stable tag with the PHP header version. Tested up to refers to the CI WordPress 6.8.3 activation and Plugin Check environment, not full live Elementor rendering. Prepare actual screenshots of the dashboard, convert-and-publish flow and native Custom Fonts result. Add release notes and a support contact the owner monitors. Keep service consent explicit, and do not add tracking on activation or total stored-font quotas.
+Validate `readme.txt`. Match its Stable tag with the PHP header version. Tested up to refers to the CI WordPress 7.1.3 activation and Plugin Check environment, not full live Elementor rendering. Prepare actual screenshots of the dashboard, convert-and-publish flow and native Custom Fonts result. Add release notes and a support contact the owner monitors. Keep service consent explicit, and do not add tracking on activation or total stored-font quotas.
 
 ## 3. Run Plugin Check
 

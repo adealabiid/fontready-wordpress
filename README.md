@@ -38,4 +38,4 @@ Version 0.4.2 sends the complete JSON package as authenticated upload pieces of 
 
 Version 0.4.3 corrects the base64 length boundary for full 128 KiB upload pieces. The transfer contract now uses the actual production chunk size and a package larger than one chunk.
 
-Version 0.4.4 prepares directory submission metadata, uses a fixed allowlisted safe redirect and checks file permission failures. Official Plugin Check is run in CI against WordPress 6.8.3. Local staging stream operations have narrowly scoped documented exceptions because WordPress filesystem transports do not support seeked chunk writes.
+Version 0.4.4 prepares directory submission metadata, uses a fixed allowlisted safe redirect and checks file permission failures. Official Plugin Check is run in CI against WordPress 7.1.3. Local staging stream operations have narrowly scoped documented exceptions because WordPress filesystem transports do not support seeked chunk writes.
