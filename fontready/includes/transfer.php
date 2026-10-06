@@ -43,7 +43,7 @@ final class FontReady_Transfer {
         }
         $index = $part['index'] ?? null; $total = $part['total'] ?? null;
         $encoded = $part['data'] ?? null; $checksum = $part['sha256'] ?? '';
-        if ( ! is_int( $index ) || ! is_int( $total ) || $index < 0 || $total < 1 || $total > 288 || $index >= $total || ! is_string( $encoded ) || strlen( $encoded ) > self::CHUNK * 4 / 3 || ! is_string( $checksum ) || ! preg_match( '/\A[a-f0-9]{64}\z/', $checksum ) ) { return new WP_Error( 'fontready_upload', 'Invalid font upload part.', array( 'status' => 400 ) ); }
+        if ( ! is_int( $index ) || ! is_int( $total ) || $index < 0 || $total < 1 || $total > 288 || $index >= $total || ! is_string( $encoded ) || strlen( $encoded ) > 4 * (int) ceil( self::CHUNK / 3 ) || ! is_string( $checksum ) || ! preg_match( '/\A[a-f0-9]{64}\z/', $checksum ) ) { return new WP_Error( 'fontready_upload', 'Invalid font upload part.', array( 'status' => 400 ) ); }
         $bytes = base64_decode( $encoded, true );
         if ( $bytes === false || strlen( $bytes ) < 1 || strlen( $bytes ) > self::CHUNK ) { return new WP_Error( 'fontready_upload', 'Invalid font upload data.', array( 'status' => 400 ) ); }
         if ( $state && $state['id'] !== $part['id'] && ! isset( $state['result'] ) && $index !== 0 ) { return new WP_Error( 'fontready_upload', 'Another upload is active. Retry publishing.', array( 'status' => 409 ) ); }

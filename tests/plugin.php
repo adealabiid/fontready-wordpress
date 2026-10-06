@@ -129,7 +129,7 @@ check(in_array($manual,$after,true),'Manual variant remains intact');
 check($response->data['variants']===1&&$response->data['existing_variants']===2,'Publish response distinguishes current and retained registry variants');
 // A staged upload cannot publish anything until a complete verified commit.
 $chunk_payload=$grouped;foreach($chunk_payload['fonts'] as &$font){$font['family']='Chunked Font';}unset($font);
-$body=json_encode($chunk_payload);$id=str_repeat('c',32);$sha=hash('sha256',$body);$parts=str_split($body,2000);$before=count($native_posts);
+$chunk_payload['padding']=str_repeat('x',200000);$body=json_encode($chunk_payload);$id=str_repeat('c',32);$sha=hash('sha256',$body);$parts=str_split($body,FontReady_Transfer::CHUNK);check(strlen($parts[0])===FontReady_Transfer::CHUNK,'Exercise a full production-size upload part');$before=count($native_posts);
 foreach($parts as $index=>$part){
  $upload=array('version'=>2,'upload'=>array('id'=>$id,'index'=>$index,'total'=>count($parts),'sha256'=>$sha,'data'=>base64_encode($part)));
  $result=FontReady_Plugin::import(new Request($upload));check($result instanceof WP_REST_Response&&$result->data['received']===$index+1,'Chunk acknowledgement');
