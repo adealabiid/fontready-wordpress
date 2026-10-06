@@ -156,6 +156,26 @@ check(is_wp_error(fontready_validate_fonts(array('version'=>1,'fonts'=>array($ba
 $bad=$grouped['fonts'][4];$bad['data']=base64_encode(substr(base64_decode($bad['data']),0,-1));
 check(is_wp_error(fontready_validate_fonts(array('version'=>1,'fonts'=>array($bad)))),'Truncated EOT rejected');
 if(getenv('ELEMENTOR_PRO_SOURCE')){ $css=get_post_meta($group[0]['elementor_post_id'],NativeCustomFonts::FONT_FACE_META_KEY,true); foreach(array('woff2','woff','truetype','svg','embedded-opentype') as $format){check(strpos($css,"format('".$format."')")!==false,'Actual Elementor CSS includes '.$format);} }
+// Separate publications of the same family retain both weights in one native record.
+$regular=$grouped;$bold=$grouped;
+foreach($regular['fonts'] as &$face){$face['family']='Sequential Weight Test';$face['weight']='400';}unset($face);
+foreach($bold['fonts'] as &$face){$face['family']='Sequential Weight Test';$face['weight']='700';}unset($face);
+$regular_result=FontReady_Plugin::import(new Request($regular));
+$registry=array_values(get_option(FontReady_Plugin::REGISTRY));
+$regular_faces=array_values(array_filter($registry,function($face){return $face['family']==='Sequential Weight Test';}));
+$weight_post=$regular_faces[0]['elementor_post_id'];
+$before=get_post_meta($weight_post,NativeCustomFonts::FONT_META_KEY,true);
+$bold_result=FontReady_Plugin::import(new Request($bold));
+$registry=array_values(get_option(FontReady_Plugin::REGISTRY));
+$weight_faces=array_values(array_filter($registry,function($face){return $face['family']==='Sequential Weight Test';}));
+check($regular_result instanceof WP_REST_Response&&$bold_result instanceof WP_REST_Response,'Separate regular and bold publishes succeed');
+check(count(array_unique(array_column($weight_faces,'elementor_post_id')))===1,'Both weights use the same native Elementor family');
+$weight_rows=get_post_meta($weight_post,NativeCustomFonts::FONT_META_KEY,true);
+check(count($weight_rows)===2,'Family contains two weight rows');
+check($weight_rows[0]===$before[0],'Publishing bold preserves every regular format');
+foreach($weight_rows as $row){foreach(array('woff2','woff','ttf','svg','eot') as $format){check(!empty($row[$format]['url']),'Every weight retains '.$format);}}
+FontReady_Plugin::import(new Request($bold));
+check(count(get_post_meta($weight_post,NativeCustomFonts::FONT_META_KEY,true))===2,'Retrying bold does not duplicate weight rows');
 foreach(glob($uploads.'/fontready/*') as $file)unlink($file);
 rmdir($uploads.'/fontready'); rmdir($uploads);
 echo "Passed $checks plugin contract checks.\n";
