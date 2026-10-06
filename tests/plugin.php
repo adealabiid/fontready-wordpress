@@ -107,12 +107,24 @@ check(count($rows)===1,'Five files share one native variant');
 foreach(array('woff2','woff','ttf','svg','eot') as $format){check(isset($rows[0][$format]['url']) && strpos($rows[0][$format]['url'],'https://')===0,'Native slot populated: '.$format);}
 check(preg_match('/grouped-format-font-regular-fontready-[a-f0-9-]+\.woff2$/',$group[0]['url'])===1,'Readable font filename');
 check(FontReady_Plugin::variant_count($faces)===4,'Counts variants rather than format files');
-$registry=get_option(FontReady_Plugin::REGISTRY);$old=$group[0];unset($registry[$old['id']]);$legacy=hash('sha256',$old['family'].'|'.$old['weight'].'|'.$old['style']);$oldpath=$old['path'];$old['path']=dirname($oldpath).'/old-hash-font.woff2';rename($oldpath,$old['path']);$old['url']='https://wordpress.example/uploads/fontready/old-hash-font.woff2';$registry[$legacy]=$old;update_option(FontReady_Plugin::REGISTRY,$registry);
+$registry=get_option(FontReady_Plugin::REGISTRY);$old=$group[0];unset($registry[$old['id']]);$legacy=hash('sha256',$old['family'].'|'.$old['weight'].'|'.$old['style']);$oldpath=$old['path'];$old['path']=dirname($oldpath).'/old-hash-font.woff2';rename($oldpath,$old['path']);$old['url']='https://wordpress.example/uploads/fontready/old-hash-font.woff2';$registry[$legacy]=$old;update_option(FontReady_Plugin::REGISTRY,$registry);$legacy_rows=get_post_meta($old['elementor_post_id'],NativeCustomFonts::FONT_META_KEY,true);$legacy_rows[0]['woff2']['url']=$old['url'];update_post_meta($old['elementor_post_id'],NativeCustomFonts::FONT_META_KEY,$legacy_rows);
 $response=FontReady_Plugin::import(new Request($grouped));
 check($response instanceof WP_REST_Response&&!isset(get_option(FontReady_Plugin::REGISTRY)[$legacy]),'Old registry migrated');
 check(!file_exists($old['path']),'Old hashed file replaced with readable name');
 $count=count(glob($uploads.'/fontready/*'));FontReady_Plugin::import(new Request($grouped));
 check(count(glob($uploads.'/fontready/*'))===$count,'Five-format retry is idempotent');
+// Removing a row in Elementor must remove it from counts and later publications.
+$native_rows=get_post_meta($native_id,NativeCustomFonts::FONT_META_KEY,true);
+$removed=$native_rows[0];array_shift($native_rows);
+$manual=array('font_weight'=>'900','font_style'=>'italic','woff2'=>array('id'=>'999','url'=>'https://wordpress.example/uploads/manual.woff2'));
+$native_rows[]=$manual;update_post_meta($native_id,NativeCustomFonts::FONT_META_KEY,$native_rows);
+check(FontReady_Plugin::variant_count(FontReady_Plugin::active_faces())===3,'Deleted native variant excluded from counts');
+$one=$base;$one['weight']='400';
+$response=FontReady_Plugin::import(new Request(array('version'=>1,'fonts'=>array($one))));
+$after=get_post_meta($native_id,NativeCustomFonts::FONT_META_KEY,true);
+check(count(array_filter($after,function($row){return $row['font_weight']==='100';}))===0,'Publishing does not resurrect deleted variant');
+check(in_array($manual,$after,true),'Manual variant remains intact');
+check($response->data['variants']===1&&$response->data['existing_variants']===2,'Publish response distinguishes current and retained registry variants');
 $bad=$grouped['fonts'][3];$bad['data']=base64_encode('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><font id="x"><font-face units-per-em="1000"/></font></svg>');
 check(is_wp_error(fontready_validate_fonts(array('version'=>1,'fonts'=>array($bad)))),'Active SVG rejected');
 $bad['data']=base64_encode('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><font id="x"><font-face units-per-em="1000"/></font></svg>');

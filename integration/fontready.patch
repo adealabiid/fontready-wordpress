@@ -651,7 +651,7 @@ index 0d6177f..c5cad83 100644
 +(output/'elementor').mkdir(exist_ok=True)
 +(output/'elementor'/'index.html').write_text(markup)
 diff --git a/static/app.css b/static/app.css
-index e371679..c2f13e1 100644
+index e371679..038a78a 100644
 --- a/static/app.css
 +++ b/static/app.css
 @@ -48,3 +48,47 @@
@@ -663,7 +663,7 @@ index e371679..c2f13e1 100644
 +
 +body[data-elementor] .tip-card{display:none}
 +
-+body[data-elementor="true"] .workspace{grid-template-columns:minmax(0,1fr);max-width:900px;margin:0 auto}body[data-elementor="true"] .side-column,body[data-elementor="true"] .preview-toggle{display:none}body[data-elementor="true"] .settings-card .convert-row{margin-top:16px}#elementor-progress{width:100%;height:12px;accent-color:var(--accent,#7453eb);margin:16px 0}.owner-link{font-size:12px;opacity:.7}
++body[data-elementor="true"] .workspace{grid-template-columns:minmax(0,1fr);max-width:900px;margin:0 auto}body[data-elementor="true"] .side-column{display:none}body[data-elementor="true"] .settings-card .convert-row{margin-top:16px}#elementor-progress{width:100%;height:12px;accent-color:var(--accent,#7453eb);margin:16px 0}.owner-link{font-size:12px;opacity:.7}
 +
 +/* Compact Elementor journey with explicit states and recovery actions. */
 +body[data-elementor="true"] .elementor-heading{max-width:900px;margin:auto;padding:36px 0 24px}
@@ -703,7 +703,7 @@ index e371679..c2f13e1 100644
 +body[data-elementor="true"] .font-guide .guide-intro{display:none}
 +@media(max-width:600px){body[data-elementor="true"] .card{padding:18px}body[data-elementor="true"] .elementor-status-card{padding:14px 16px}.publisher-actions{align-items:stretch;gap:10px}.publisher-actions>*{flex:1 1 100%}.stage-badge{font-size:8px}body[data-elementor="true"] .countdown{font-size:10px}body[data-elementor="true"] .result-font-heading small{width:100%;margin-top:0}}
 diff --git a/static/app.js b/static/app.js
-index 6912ec7..e774ac3 100644
+index 6912ec7..ecf9b93 100644
 --- a/static/app.js
 +++ b/static/app.js
 @@ -1,24 +1,55 @@
@@ -761,8 +761,9 @@ index 6912ec7..e774ac3 100644
 +  if(elementorMode){if(incoming.length!==1)return message('Upload one font at a time for Elementor.',true);files=[];}
    let errors = [];
 -  for (const file of incoming) { if (!/\.(ttf|otf|woff|woff2)$/i.test(file.name)) {errors.push(`${file.name}: unsupported file type.`); continue;} if (!file.size || file.size > 5 * 1048576) { errors.push(`${file.name}: choose a file under 5 MB.`); continue; } if (files.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) continue; if (files.length >= 10 || files.reduce((s,f)=>s+f.size,0) + file.size > 25*1048576) { errors.push('Maximum 10 files and 25 MB per batch.'); break; } files.push(file); }
+-  $('message').hidden = !errors.length; if (errors.length) message(errors.join(' '), true); renderFiles(); loadPreviews();
 +  for (const file of incoming) { if (!/\.(ttf|otf|woff|woff2)$/i.test(file.name)) {errors.push(`${file.name}: unsupported file type.`); continue;} if (!file.size || file.size > 5 * 1048576) { errors.push(`${file.name}: choose a file under 5 MB.`); continue; } if (files.some(f => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified)) continue; if (files.length >= (elementorMode ? 1 : 10) || files.reduce((s,f)=>s+f.size,0) + file.size > 25*1048576) { errors.push(elementorMode ? 'Upload one font at a time for Elementor.' : 'Maximum 10 files and 25 MB per batch.'); break; } files.push(file); }
-   $('message').hidden = !errors.length; if (errors.length) message(errors.join(' '), true); renderFiles(); loadPreviews();
++  $('message').hidden = !errors.length; if (errors.length) message(errors.join(' '), true); renderFiles(); if(elementorMode && files.length && !previewOpen)togglePreview();else loadPreviews();
 +  if(elementorMode && files.length && !errors.length) setTimeout(()=>{if(!busy) $('convert').onclick();},0);
  }
  async function loadPreviews() {
@@ -861,7 +862,7 @@ index 6912ec7..e774ac3 100644
    if(!previewOnly)refreshHistory();
  }
 diff --git a/static/wordpress.js b/static/wordpress.js
-index 578f2b7..37a376f 100644
+index 578f2b7..af87794 100644
 --- a/static/wordpress.js
 +++ b/static/wordpress.js
 @@ -1,12 +1,35 @@
@@ -1025,7 +1026,7 @@ index 578f2b7..37a376f 100644
 +      stage(4,'Your font is published',`Ready to use in Elementor on ${host}.`,'complete');
 +      if(get('elementor-result-title'))get('elementor-result-title').textContent='Published to Elementor Pro';
 +      publish.textContent='Published ✓';publish.hidden=true;
-+      if(Array.isArray(data.formats)) status(`${data.families.join(', ')} is published to ${host}. All ${data.formats.length} formats are installed. Open Elementor Custom Fonts below, or upload your next font.`);
++      if(Array.isArray(data.formats)) status(`${data.families.join(', ')} is published to ${host}. All ${data.formats.length} formats are installed. ${Number.isInteger(data.existing_variants) && data.existing_variants>0 ? ` ${data.existing_variants} previously installed variant${data.existing_variants===1?'':'s'} in this family were kept. Manage unwanted variants in Elementor Custom Fonts.` : ' Open Elementor Custom Fonts below, or upload your next font.'}`);
 +      if (get('elementor-manage') && data.manage_url) { const url = new URL(data.manage_url); if(url.origin === new URL(connection.site).origin && url.protocol==='https:') { get('elementor-manage').href=url.href;get('elementor-manage').textContent='Open Elementor Custom Fonts ↗';get('elementor-manage').hidden=false; } }
        api(`/api/conversions/${job.id}/published/`,{method:'POST',headers:{'X-CSRFToken':csrf()}}).catch(()=>{});
 -    } catch (error) { status(error.message || 'Check WordPress → FontReady before retrying.',true); }
@@ -1045,7 +1046,7 @@ index 578f2b7..37a376f 100644
 +  });
  })();
 diff --git a/templates/index.html b/templates/index.html
-index 86ad04a..282b55c 100644
+index 86ad04a..cda509f 100644
 --- a/templates/index.html
 +++ b/templates/index.html
 @@ -18,24 +18,21 @@
@@ -1053,12 +1054,12 @@ index 86ad04a..282b55c 100644
    {% if analytics_enabled %}<script async src="https://www.googletagmanager.com/gtag/js?id=G-ZMTELBECKT"></script><script src="{% static 'analytics.js' %}" defer></script>{% endif %}
    <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
 -  <link rel="stylesheet" href="{% static 'app.css' %}">
-+  <link rel="stylesheet" href="{% static 'app.css' %}?v=20261006-2">
++  <link rel="stylesheet" href="{% static 'app.css' %}?v=20261006-3">
    <script src="{% static 'i18n.js' %}" defer></script>
 -  <script src="{% static 'app.js' %}" defer></script>
 -  <script src="{% static 'wordpress.js' %}" defer></script>
-+  <script src="{% static 'app.js' %}?v=20261006-2" defer></script>
-+  <script src="{% static 'wordpress.js' %}?v=20261006-2" defer></script>
++  <script src="{% static 'app.js' %}?v=20261006-3" defer></script>
++  <script src="{% static 'wordpress.js' %}?v=20261006-3" defer></script>
  </head>
 -<body data-interface-language="{{ language }}">
 +<body data-interface-language="{{ language }}"{% if elementor_page %} data-elementor="true"{% endif %}>

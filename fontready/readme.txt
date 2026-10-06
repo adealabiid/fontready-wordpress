@@ -3,7 +3,7 @@ Contributors: adealabiid
 Tags: fonts, typography, elementor, custom fonts
 Requires at least: 6.2
 Requires PHP: 7.4
-Stable tag: 0.4.0
+Stable tag: 0.4.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -53,6 +53,10 @@ HTTPS, REST API access and forwarding of the Authorization header are required. 
 If an installation response is lost, check the installed count before retrying. Clear page caches and refresh Elementor after installing. If a terminated PHP process leaves a write lock, deactivate and reactivate the plugin when no imports are running.
 
 == Changelog ==
+
+= 0.4.1 =
+* Respect font variants removed in Elementor and preserve manually added variants.
+* Report retained imports separately from the current publication.
 
 = 0.4.0 =
 * Publish WOFF2, WOFF, TTF, SVG and EOT into one native Elementor variant.

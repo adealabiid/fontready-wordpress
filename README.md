@@ -31,3 +31,5 @@ See [the submission plan](docs/WORDPRESS_ORG_SUBMISSION.md). Do not claim a Test
 Version 0.4.0 installs WOFF2, WOFF, TTF, SVG and EOT together in one native weight/style row. Readable filenames include family, weight, optional style and a short FontReady suffix. Earlier single-format records migrate on publishing. The companion Elementor page starts conversion on upload without format choices and automatically resumes publishing after approval.
 
 The platform owner dashboard is https://fontready.com/owner/. It uses a separate FontReady superuser login, provisioned in the deployed website service with `python manage.py createsuperuser`; see the website README for production setup.
+
+Version 0.4.1 respects variant and format deletions in Elementor, preserves administrator-added variants, and reports how many previously imported variants remain alongside the current upload. Earlier imports are kept until the administrator removes them in Elementor Custom Fonts; fonts are never fabricated from one static upload.

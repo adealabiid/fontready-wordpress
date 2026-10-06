@@ -19,6 +19,22 @@ final class FontReady_Elementor {
             throw new RuntimeException( 'This Elementor Pro version does not expose the supported Custom Fonts interface. No fonts were installed.' );
         }
     }
+    /** Respect edits made in Elementor instead of restoring removed registry entries. */
+    public static function retained_faces( $faces ) {
+        return array_filter( $faces, function( $face ) {
+            if ( empty( $face['elementor_post_id'] ) ) { return true; }
+            $post_id = $face['elementor_post_id'];
+            if ( get_post_status( $post_id ) !== 'publish' ) { return false; }
+            $rows = get_post_meta( $post_id, 'elementor_font_files', true );
+            if ( ! is_array( $rows ) ) { return false; }
+            foreach ( $rows as $row ) {
+                if ( (string) ( $row['font_weight'] ?? '' ) !== (string) $face['weight'] || ( $row['font_style'] ?? '' ) !== $face['style'] ) { continue; }
+                $slot = $row[ $face['format'] ] ?? array();
+                if ( ! empty( $slot['url'] ) && set_url_scheme( $slot['url'], 'https' ) === set_url_scheme( $face['url'], 'https' ) ) { return true; }
+            }
+            return false;
+        } );
+    }
     public function sync( &$faces, $families ) {
         $manager_class = get_class( $this->manager );
         $cpt = $manager_class::CPT;
@@ -38,6 +54,11 @@ final class FontReady_Elementor {
                 update_post_meta( $post_id, '_fontready_owned', '1' );
             } else { if ( get_post_status( $post_id ) !== 'publish' ) { throw new RuntimeException( 'An existing draft font must be published or removed in Elementor before updating it.' ); } $this->snapshots[ $post_id ] = get_post_meta( $post_id ); }
             $rows = array();
+            // Keep administrator-added variants and format slots on plugin-owned families.
+            $existing_rows = get_post_meta( $post_id, constant( get_class( $this->type ) . '::FONT_META_KEY' ), true );
+            foreach ( is_array( $existing_rows ) ? $existing_rows : array() as $row ) {
+                $rows[ $row['font_weight'] . ':' . $row['font_style'] ] = $row;
+            }
             foreach ( $faces as &$face ) {
                 if ( $face['family'] !== $family ) { continue; }
                 if ( $face['format'] === 'otf' ) { throw new RuntimeException( 'Select WOFF2, WOFF or TTF when converting for Elementor Pro. Direct OTF imports are not supported by this adapter.' ); }
