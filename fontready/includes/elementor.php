@@ -43,8 +43,8 @@ final class FontReady_Elementor {
             $posts = get_posts( array( 'post_type' => $cpt, 'post_status' => array( 'publish', 'draft', 'private', 'trash' ), 'title' => $family, 'posts_per_page' => -1 ) );
             $post_id = 0;
             foreach ( $posts as $post ) {
-                if ( get_post_meta( $post->ID, '_fontready_owned', true ) !== '1' ) { throw new RuntimeException( 'A font named ' . $family . ' already exists in Elementor. Rename the family or remove that existing record before publishing.' ); }
-                if ( $post->post_status === 'trash' ) { throw new RuntimeException( 'Restore or permanently delete the trashed Elementor font ' . $family . ' before publishing.' ); }
+                if ( get_post_meta( $post->ID, '_fontready_owned', true ) !== '1' ) { throw new RuntimeException( 'A font named ' . esc_html( $family ) . ' already exists in Elementor. Rename the family or remove that existing record before publishing.' ); }
+                if ( $post->post_status === 'trash' ) { throw new RuntimeException( 'Restore or permanently delete the trashed Elementor font ' . esc_html( $family ) . ' before publishing.' ); }
                 $post_id = $post->ID;
             }
             if ( ! $post_id ) {

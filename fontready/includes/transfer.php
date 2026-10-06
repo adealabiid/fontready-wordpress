@@ -51,10 +51,12 @@ final class FontReady_Transfer {
             if ( $index !== 0 ) { return new WP_Error( 'fontready_upload', 'Start the font upload again.', array( 'status' => 409 ) ); }
             self::cleanup( $state );
             $temporary = realpath( sys_get_temp_dir() ); $root = realpath( ABSPATH );
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_is_writable -- Local private staging requires a local filesystem, never FTP transport.
             if ( ! $temporary || ! is_writable( $temporary ) || ( $root && ( $temporary === $root || strpos( $temporary, $root . DIRECTORY_SEPARATOR ) === 0 ) ) ) { return new WP_Error( 'fontready_upload', 'WordPress needs a writable private system temporary directory for font publishing.', array( 'status' => 500 ) ); }
             $path = tempnam( $temporary, 'fontready-' );
             if ( ! $path ) { return new WP_Error( 'fontready_upload', 'Could not prepare the font upload.', array( 'status' => 500 ) ); }
-            chmod( $path, 0600 );
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Restrict local temporary font data to its owner.
+            if ( ! chmod( $path, 0600 ) ) { wp_delete_file( $path ); return new WP_Error( 'fontready_upload', 'Could not protect the private upload file.', array( 'status' => 500 ) ); }
             wp_schedule_single_event( time() + 600, 'fontready_cleanup_transfer' );
             $state = array( 'id' => $part['id'], 'scope' => $scope, 'path' => $path, 'expires' => time() + 600, 'next' => 0, 'total' => $total, 'bytes' => 0, 'sha256' => $checksum );
         }
@@ -63,10 +65,13 @@ final class FontReady_Transfer {
         if ( $index === $state['next'] - 1 && hash_equals( $state['last_hash'] ?? '', $part_hash ) ) { return new WP_REST_Response( array( 'received' => $state['next'], 'total' => $total ), 200 ); }
         if ( $index !== $state['next'] || $state['bytes'] + strlen( $bytes ) > self::LIMIT ) { return new WP_Error( 'fontready_upload', 'Font upload is out of order or too large.', array( 'status' => 400 ) ); }
         // Use the recorded offset: retry after a database failure overwrites the same part.
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Local offset writes make chunk retries atomic without rewriting a 36 MB package per request.
         $file = fopen( $state['path'], 'c+b' );
         if ( ! $file ) { return new WP_Error( 'fontready_upload', 'The temporary font upload is unavailable.', array( 'status' => 500 ) ); }
         $written = false;
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Seeked local writes are required for idempotent chunk retries.
         if ( fseek( $file, $state['bytes'] ) === 0 ) { $written = fwrite( $file, $bytes ); ftruncate( $file, $state['bytes'] + strlen( $bytes ) ); }
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Close the local staging handle opened above.
         fclose( $file );
         if ( $written !== strlen( $bytes ) ) { return new WP_Error( 'fontready_upload', 'Could not save a font upload part.', array( 'status' => 500 ) ); }
         $state['bytes'] += strlen( $bytes ); $state['next']++; $state['last_hash'] = $part_hash;

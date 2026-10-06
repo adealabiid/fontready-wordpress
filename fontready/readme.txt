@@ -1,9 +1,9 @@
 === FontReady ===
-Contributors: adealabiid
 Tags: fonts, typography, elementor, custom fonts
 Requires at least: 6.2
+Tested up to: 6.8.3
 Requires PHP: 7.4
-Stable tag: 0.4.3
+Stable tag: 0.4.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -24,10 +24,10 @@ FontReady is independent and is not affiliated with or endorsed by Elementor.
 5. Approve through your WordPress administrator account. The selected kit returns with you and publishing resumes.
 6. Find your fonts in Elementor → Custom Fonts and refresh the Elementor editor to select them.
 
-The companion website release must be deployed before the connection is available. Download kits expire 24 minutes after conversion. If installation takes longer, convert again.
+Download kits expire 24 minutes after conversion. If installation takes longer, convert again.
 
 == External service and privacy ==
-Font conversion requires the FontReady service. Read https://fontready.com/privacy/ for conversion storage, statistics, website analytics and connection details before using the service.
+Font conversion requires the FontReady service. Read https://fontready.com/terms/ for service terms and https://fontready.com/privacy/ for conversion storage, statistics, website analytics and connection details before using the service.
 
 The plugin makes no automatic outbound requests or telemetry on activation. On explicitly connecting, the browser shares your confirmed domain, installed font totals and successful installation reports with FontReady. Conversion dates, family names, variant counts and output formats are retained separately from expiring uploaded files for usage statistics.
 
@@ -48,11 +48,15 @@ Only install fonts you have permission to use on your website. Upload TTF, OTF, 
 == Limits and troubleshooting ==
 The Elementor page accepts one uploaded font at a time. Ready kits may contain up to 10 variants, 5 MB per generated file and 25 MB total. All five output formats are installed together. Variable WOFF/WOFF2 ranges are preserved; legacy outline conversion may use a default static instance. Identical retries do not duplicate files. Matching family, weight and style replaces the existing variant.
 
-HTTPS, REST API access and forwarding of the Authorization header are required. Server rules must allow OPTIONS, GET and POST to the FontReady REST routes. CORS allows only https://fontready.com. Both pretty and query-style WordPress REST routes work. PHP post_max_size, memory_limit and proxy limits must accommodate a base64 JSON payload of up to about 36 MB.
+HTTPS, REST API access and forwarding of the Authorization header are required. Server rules must allow OPTIONS, GET and POST to the FontReady REST routes. CORS allows only https://fontready.com. Both pretty and query-style WordPress REST routes work. Uploads use 128 KiB pieces in JSON requests smaller than 256 KiB. WordPress needs a writable private system temporary directory and enough PHP memory and temporary disk space to validate a complete package of up to 36 MB.
 
 If an installation response is lost, check the installed count before retrying. Clear page caches and refresh Elementor after installing. If a terminated PHP process leaves a write lock, deactivate and reactivate the plugin when no imports are running.
 
 == Changelog ==
+
+= 0.4.4 =
+* Prepare directory metadata and document private staging filesystem exceptions.
+* Use an allowlisted safe service redirect and fail safely if file permissions cannot be set.
 
 = 0.4.3 =
 * Correct base64 padding allowance for full 128 KiB upload pieces.
@@ -76,7 +80,6 @@ If an installation response is lost, check the installed count before retrying. 
 = 0.3.0 =
 Native Elementor Custom Fonts records and media attachments; convert-first Elementor publishing page; selected-kit recovery through administrator approval; removal of the total stored-variant quota.
 
-= 0.3.0 =
 Seamless administrator redirect connection, Elementor Pro confirmation, redesigned branded dashboard, local font hosting and consent-based connection statistics.
 
 = 0.1.0 =

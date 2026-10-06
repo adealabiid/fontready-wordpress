@@ -11,3 +11,5 @@ jobs:
         with:
           build-dir: './fontready'
           slug: fontready
+          wp-version: '6.8.3'
+          strict: true
