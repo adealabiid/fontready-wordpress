@@ -1,0 +1,381 @@
+diff --git a/config/urls.py b/config/urls.py
+index 03f1ec2..823bf30 100644
+--- a/config/urls.py
++++ b/config/urls.py
+@@ -1,5 +1,5 @@
+ from django.urls import path
+-from converter import views, cloud_views, seo
++from converter import views, cloud_views, seo, wordpress
+ 
+ urlpatterns = [
+     path('', views.home, name='home'),
+@@ -15,5 +15,6 @@ urlpatterns = [
+     path('api/uploads/<uuid:token>/complete/', cloud_views.complete_upload),
+     path('api/maintenance/', cloud_views.maintenance),
+     path('health/', views.health),
++    path('api/conversions/<uuid:token>/wordpress/', wordpress.bundle),
++    path('wordpress-plugin/', wordpress.plugin_download),
+ ]
+-
+diff --git a/converter/test_wordpress.py b/converter/test_wordpress.py
+new file mode 100644
+index 0000000..fd0c605
+--- /dev/null
++++ b/converter/test_wordpress.py
+@@ -0,0 +1,108 @@
++import base64
++import io
++import tempfile
++from datetime import timedelta
++from pathlib import Path
++from unittest.mock import patch, Mock
++from django.core.files.uploadedfile import SimpleUploadedFile
++from django.test import TestCase, Client, override_settings
++from django.utils import timezone
++from fontTools.ttLib import TTFont
++from .models import Conversion
++from .jobs import run_next
++from .tests import font_bytes
++
++
++class WordPressExportTests(TestCase):
++    def setUp(self):
++        temp = tempfile.TemporaryDirectory()
++        self.addCleanup(temp.cleanup)
++        settings = override_settings(PRIVATE_ROOT=Path(temp.name), AI_ENABLED=False)
++        settings.enable()
++        self.addCleanup(settings.disable)
++
++    def convert(self, formats=('woff2', 'woff')):
++        response = self.client.post('/api/conversions/', {'fonts': SimpleUploadedFile('test.ttf', font_bytes()), 'formats': list(formats)})
++        self.assertEqual(response.status_code, 202)
++        run_next()
++        self.job = Conversion.objects.get()
++        self.assertEqual(self.job.state, 'ready', self.job.error)
++        self.url = f'/api/conversions/{self.job.token}/wordpress/'
++        return self.job
++
++    def test_export_prefers_woff2_and_roundtrips_real_font(self):
++        job = self.convert()
++        response = self.client.post(self.url)
++        self.assertEqual(response.status_code, 200)
++        font = response.json()['fonts'][0]
++        self.assertEqual(font['format'], 'woff2')
++        self.assertEqual(font['family'], job.results[0]['family'])
++        with TTFont(io.BytesIO(base64.b64decode(font['data']))) as parsed:
++            self.assertEqual(parsed.getBestCmap(), {32: 'space', 65: 'A', 66: 'B'})
++        self.assertIn('no-store', response['Cache-Control'])
++
++    def test_owner_expiry_readiness_csrf_and_method(self):
++        job = self.convert()
++        self.assertEqual(Client().post(self.url).status_code, 404)
++        self.assertEqual(self.client.get(self.url).status_code, 405)
++        csrf_client = Client(enforce_csrf_checks=True)
++        csrf_client.cookies = self.client.cookies.copy()
++        self.assertEqual(csrf_client.post(self.url).status_code, 403)
++        job.state = 'processing'
++        job.save()
++        self.assertEqual(self.client.post(self.url).status_code, 409)
++        job.state = 'ready'
++        job.expires_at = timezone.now() - timedelta(seconds=1)
++        job.save()
++        self.assertEqual(self.client.post(self.url).status_code, 410)
++
++    def test_svg_only_is_not_publishable(self):
++        self.convert(('svg',))
++        self.assertEqual(self.client.post(self.url).status_code, 400)
++
++    def test_s3_export_is_scoped_and_closes_stream(self):
++        job = self.convert(('ttf',))
++        name = job.results[0]['files']['ttf']
++        data = font_bytes()
++        job.results[0]['sizes']['ttf'] = len(data)
++        job.storage_prefix = f'fontready-test/{job.token}'
++        job.options['storage_backend'] = 's3'
++        job.blob_assets = {'fonts': {name: {'path': job.storage_prefix + '/output/' + name}}}
++        job.save()
++        stream = io.BytesIO(data)
++        client = Mock()
++        client.get_object.return_value = {'Body': stream}
++        with patch('converter.object_storage.client', return_value=client):
++            self.assertEqual(self.client.post(self.url).status_code, 200)
++            self.assertTrue(stream.closed)
++            job.blob_assets['fonts'][name]['path'] = 'other-job/output/font.ttf'
++            job.save()
++            self.assertEqual(self.client.post(self.url).status_code, 503)
++            self.assertEqual(client.get_object.call_count, 1)
++
++    def test_blob_export_and_oversized_asset(self):
++        job = self.convert(('ttf',))
++        name = job.results[0]['files']['ttf']
++        data = font_bytes()
++        job.results[0]['sizes']['ttf'] = len(data)
++        job.storage_prefix = f'blob/{job.token}'
++        job.blob_assets = {'fonts': {name: {'path': job.storage_prefix + '/output/' + name}}}
++        job.save()
++        def fetch(path, target, size):
++            target.write_bytes(data)
++        with patch('converter.cloud_storage.fetch_input', side_effect=fetch) as storage:
++            self.assertEqual(self.client.post(self.url).status_code, 200)
++            job.results[0]['sizes']['ttf'] = 6 * 1024 * 1024
++            job.save()
++            self.assertEqual(self.client.post(self.url).status_code, 503)
++            self.assertEqual(storage.call_count, 1)
++
++    def test_missing_archive_and_downloadable_plugin(self):
++        job = self.convert()
++        from django.conf import settings
++        (settings.PRIVATE_ROOT / str(job.token) / 'fontready.zip').unlink()
++        self.assertEqual(self.client.post(self.url).status_code, 503)
++        download = self.client.get('/wordpress-plugin/')
++        self.assertEqual(download.status_code, 200)
++        self.assertEqual(download['Content-Type'], 'application/zip')
++        download.close()
+diff --git a/converter/wordpress.py b/converter/wordpress.py
+new file mode 100644
+index 0000000..49a1445
+--- /dev/null
++++ b/converter/wordpress.py
+@@ -0,0 +1,87 @@
++"""Session-private export. WordPress credentials never enter the Django server."""
++import base64
++import tempfile
++import zipfile
++from pathlib import Path
++
++from django.conf import settings
++from django.http import JsonResponse, FileResponse
++from django.views.decorators.cache import never_cache
++from django.views.decorators.http import require_POST
++
++from .models import Conversion
++from .views import owner
++
++
++def font_bytes(job, filename, size):
++    if not 0 < size <= settings.MAX_FILE_BYTES or Path(filename).name != filename:
++        raise ValueError('Invalid font asset')
++    if job.storage_prefix:
++        asset = job.blob_assets.get('fonts', {}).get(filename, {})
++        path = asset.get('path', '')
++        if not path.startswith(job.storage_prefix + '/output/'):
++            raise ValueError('Invalid font scope')
++        if job.options.get('storage_backend') == 's3':
++            from . import object_storage
++            if job.storage_prefix != object_storage.prefix(job.token):
++                raise ValueError('Invalid object scope')
++            response = object_storage.client().get_object(Bucket=settings.S3_BUCKET, Key=path)
++            stream = response['Body']
++            try:
++                data = stream.read(size + 1)
++            finally:
++                stream.close()
++        else:
++            from . import cloud_storage
++            with tempfile.TemporaryDirectory() as directory:
++                target = Path(directory) / 'font'
++                cloud_storage.fetch_input(path, target, size)
++                data = target.read_bytes()
++    else:
++        with zipfile.ZipFile(settings.PRIVATE_ROOT / str(job.token) / 'fontready.zip') as archive:
++            member = archive.getinfo('fonts/' + filename)
++            if member.file_size != size:
++                raise ValueError('Invalid font size')
++            with archive.open(member) as stream:
++                data = stream.read(size + 1)
++    if len(data) != size:
++        raise ValueError('Invalid font size')
++    return data
++
++
++@never_cache
++@require_POST
++def bundle(request, token):
++    job = Conversion.objects.filter(token=token, owner=owner(request)).first()
++    if not job:
++        return JsonResponse({'error': 'Conversion not found.'}, status=404)
++    if job.expired:
++        return JsonResponse({'error': 'This kit has expired. Convert your fonts again.'}, status=410)
++    if job.state != 'ready':
++        return JsonResponse({'error': 'Your fonts are not ready.'}, status=409)
++    if not 1 <= len(job.results) <= settings.MAX_FILES:
++        return JsonResponse({'error': 'Invalid font batch.'}, status=400)
++    fonts, total = [], 0
++    try:
++        for font in job.results:
++            fmt = next((f for f in ('woff2', 'woff', 'ttf', 'otf') if f in font.get('files', {})), None)
++            if not fmt:
++                return JsonResponse({'error': 'Select WOFF2, WOFF, TTF or OTF when converting. SVG cannot be published.'}, status=400)
++            size = int(font['sizes'][fmt])
++            total += size
++            if total > settings.MAX_BATCH_BYTES:
++                return JsonResponse({'error': 'The WordPress batch exceeds 25 MB. Convert fewer fonts.'}, status=400)
++            data = font_bytes(job, font['files'][fmt], size)
++            fonts.append({'family': font['family'], 'weight': str(font['weight']),
++                          'style': font['style'], 'format': fmt,
++                          'data': base64.b64encode(data).decode('ascii')})
++    except Exception:
++        return JsonResponse({'error': 'Font files are unavailable. Try again or convert a new kit.'}, status=503)
++    return JsonResponse({'version': 1, 'fonts': fonts})
++
++
++def plugin_download(request):
++    path = settings.BASE_DIR / 'wordpress' / 'fontready-wordpress.zip'
++    if not path.is_file():
++        return JsonResponse({'error': 'Plugin download unavailable.'}, status=503)
++    return FileResponse(path.open('rb'), as_attachment=True, filename='fontready-wordpress.zip', content_type='application/zip')
+diff --git a/static/app.css b/static/app.css
+index 8b3127b..48ef50d 100644
+--- a/static/app.css
++++ b/static/app.css
+@@ -35,4 +35,14 @@
+ 
+ /* Crawlable format guidance and concise answers beneath the converter. */
+ .font-guide{border-top:1px solid var(--line);padding:48px 0 54px}.guide-intro{max-width:760px;margin-bottom:28px}.guide-intro h2{font-size:27px;line-height:1.3;letter-spacing:-.7px}.font-guide p{font-size:13px;color:var(--muted);line-height:1.8}.font-guide>h3{font-size:18px;margin:30px 0 16px}.format-comparison{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)}.format-comparison table{border-collapse:collapse;width:100%;text-align:left;font-size:12px}.format-comparison th,.format-comparison td{padding:14px 17px;border-bottom:1px solid var(--line);vertical-align:top}.format-comparison thead{background:var(--soft)}.format-comparison td{color:var(--muted)}.format-comparison tbody tr:last-child>*{border-bottom:0}.faq-grid{display:grid;grid-template-columns:1fr 1fr;gap:25px 38px}.faq-grid h4{font-size:14px;line-height:1.5;margin:0 0 8px}.faq-grid p{margin:0}footer.shell{flex-wrap:wrap}.developer-credit a{font-weight:600;color:var(--purple)}.developer-credit>span{color:var(--purple)}.footer-languages{display:flex;gap:14px;flex-wrap:wrap;width:100%;font-size:11px}.footer-languages a[aria-current]{color:var(--purple)}@media(max-width:760px){.faq-grid{grid-template-columns:1fr}.guide-intro h2{font-size:23px}.format-comparison th,.format-comparison td{padding:11px;font-size:11px}footer>nav:last-child{display:flex}footer .developer-credit{display:block;width:100%}}
+-
++/* WordPress publisher follows the existing result card and colour scheme. */
++.wordpress-publish { margin:24px 0; padding:24px; border:1px solid var(--border,#d8dfdb); border-radius:16px; }
++.wordpress-publish h3 { margin-top:0; }
++.wordpress-publish ol { padding-left:20px; line-height:1.7; }
++.wordpress-publish a { color:inherit; text-decoration:underline; }
++.wordpress-publish textarea { display:block; box-sizing:border-box; width:100%; margin:8px 0 12px; padding:12px; border:1px solid var(--border,#d8dfdb); border-radius:8px; background:transparent; color:inherit; font:inherit; resize:vertical; }
++.wordpress-license { display:flex; align-items:flex-start; gap:8px; margin:16px 0; }
++.wordpress-license input { flex-shrink:0; margin-top:4px; }
++.wordpress-publish .result-actions { flex-wrap:wrap; }
++#wordpress-review, #wordpress-status { overflow-wrap:anywhere; }
++@media(max-width:600px) { .wordpress-publish { padding:16px; } }
+diff --git a/static/app.js b/static/app.js
+index 82661de..f4b1e5a 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -92,6 +92,11 @@ function poll(id) {
+ }
+ function showResult(job) {
+   activeJob=job; $('result').hidden=false; $('result-files').replaceChildren();
++  if($('wordpress-review')){
++    $('wordpress-status').textContent='';
++    $('wordpress-license').checked=false;
++    $('wordpress-review').textContent=job.results.map(f=>`${f.family} · ${f.weight} · ${f.style}`).join(' / ');
++  }
+   for(const result of job.results){
+     const row=element('section',undefined,'result-row');
+     const heading=element('div',undefined,'result-font-heading');
+@@ -290,4 +295,3 @@ setInterval(()=>{if(!factsPaused&&!document.hidden&&!window.matchMedia('(prefers
+ $('site-language').value=interfaceLanguage;
+ $('site-language').onchange=e=>{const code=e.target.value;if(previewOnly)setLanguage(code);else location.assign(code==='en'?'/':`/${code}/`);};
+ setLanguage(interfaceLanguage);
+-
+diff --git a/static/wordpress.js b/static/wordpress.js
+new file mode 100644
+index 0000000..b8adc73
+--- /dev/null
++++ b/static/wordpress.js
+@@ -0,0 +1,72 @@
++/* Credentials are held only in the form, never saved or sent to FontReady. */
++(() => {
++  const get = id => document.getElementById(id);
++  const publish = get('wordpress-publish');
++  if (!publish) return;
++  let publishing = false;
++  const status = (text, error = false) => {
++    get('wordpress-status').textContent = text;
++    get('wordpress-status').className = error ? 'error' : '';
++  };
++  function connectionDetails(value) {
++    let connection;
++    try { connection = JSON.parse(value); } catch { throw new Error('Paste the complete connection details from WordPress → FontReady.'); }
++    if (typeof connection.endpoint !== 'string' || typeof connection.key !== 'string' || !/^[a-f0-9]{64}$/.test(connection.key)) throw new Error('The connection details are incomplete. Generate a new key in WordPress.');
++    let url;
++    try { url = new URL(connection.endpoint); } catch { throw new Error('The WordPress endpoint is invalid.'); }
++    const route = url.searchParams.get('rest_route');
++    const queryRoute = route === '/fontready/v1/fonts' && [...url.searchParams.keys()].length === 1;
++    const pathRoute = url.pathname.endsWith('/wp-json/fontready/v1/fonts') && !url.search;
++    if (url.protocol !== 'https:' || url.username || url.password || url.hash || !(pathRoute || queryRoute)) throw new Error('Use the HTTPS connection details generated by the FontReady plugin.');
++    return {endpoint: url.href, key: connection.key, host: url.host};
++  }
++  get('wordpress-connection').addEventListener('input', () => {
++    try { const details = connectionDetails(get('wordpress-connection').value); status(`Publish destination: ${details.host}. Review your fonts above.`); }
++    catch { status(''); }
++  });
++  get('wordpress-disconnect').onclick = () => {
++    if (publishing) return;
++    get('wordpress-connection').value = '';
++    get('wordpress-license').checked = false;
++    status('Connection cleared from this page. You can also revoke the key in WordPress.');
++  };
++  publish.onclick = async () => {
++    if (publishing) return;
++    if (previewOnly) return status('Publishing is available in the running FontReady application.', true);
++    const job = activeJob;
++    if (!job || job.state !== 'ready' || new Date(job.expires_at) <= new Date()) return status('This kit is unavailable. Convert your fonts again.', true);
++    if (!get('wordpress-license').checked) return status('Confirm that you have permission to use these fonts before publishing.', true);
++    let connection;
++    try { connection = connectionDetails(get('wordpress-connection').value); } catch (error) { return status(error.message, true); }
++    publishing = true;
++    publish.disabled = true;
++    get('wordpress-connection').disabled = true;
++    get('wordpress-disconnect').disabled = true;
++    status(`Preparing your fonts for ${connection.host}…`);
++    try {
++      const payload = await api(`/api/conversions/${job.id}/wordpress/`, {method: 'POST', headers: {'X-CSRFToken': csrf()}, signal: AbortSignal.timeout(120000)});
++      if (activeJob?.id !== job.id) throw new Error('The active kit changed. Review it and publish again.');
++      status(`Publishing to ${connection.host}…`);
++      let response;
++      try {
++        response = await fetch(connection.endpoint, {method: 'POST', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(120000), headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${connection.key}`}, body: JSON.stringify(payload)});
++      } catch {
++        throw new Error('Could not confirm publishing. Check WordPress → FontReady before retrying. Check HTTPS, REST API access and your security plugin if no fonts appeared.');
++      }
++      const data = await response.json().catch(() => null);
++      if (!response.ok) {
++        if (response.status === 401) get('wordpress-connection').value = '';
++        throw new Error(data?.message || `WordPress returned ${response.status}. Check the plugin and try again.`);
++      }
++      if (!Array.isArray(data?.families) || !Number.isInteger(data?.imported)) throw new Error('WordPress returned an unexpected response. Check FontReady in WordPress before retrying.');
++      status(`Published to ${connection.host}: ${data.families.join(', ')}. Refresh the Elementor editor to use your fonts under FontReady.`);
++    } catch (error) { status(error.message, true); }
++    finally {
++      connection = null;
++      publishing = false;
++      publish.disabled = false;
++      get('wordpress-connection').disabled = false;
++      get('wordpress-disconnect').disabled = false;
++    }
++  };
++})();
+diff --git a/templates/index.html b/templates/index.html
+index 2ea31a5..121d622 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -20,6 +20,7 @@
+   <link rel="stylesheet" href="{% static 'app.css' %}">
+   <script src="{% static 'i18n.js' %}" defer></script>
+   <script src="{% static 'app.js' %}" defer></script>
++  <script src="{% static 'wordpress.js' %}" defer></script>
+ </head>
+ <body data-interface-language="{{ language }}">
+   <div class="preview-banner" id="preview-banner" hidden data-i18n="Interface preview · Files stay in your browser here. Run the Django app for real conversion and downloads.">Interface preview · Files stay in your browser here. Run the Django app for real conversion and downloads.</div>
+@@ -79,6 +80,18 @@ everything feel different.</textarea>
+           <div id="result-files"></div>
+           <div class="result-actions"><a id="download" class="primary-button" href="#" data-i18n="Download kit ↓">Download kit ↓</a><button id="copy-link" class="secondary-button" data-i18n="Copy download link">Copy download link</button></div>
+           <p class="muted" data-i18n="Includes fonts, stylesheet.css, preview.html and README.txt.">Includes fonts, stylesheet.css, preview.html and README.txt.</p>
++          <section class="wordpress-publish" aria-labelledby="wordpress-title" data-clarity-mask="true">
++            <h3 id="wordpress-title">Publish to WordPress</h3>
++            <p class="muted">Your fonts, on your website. No FontReady account needed.</p>
++            <ol><li><a href="/wordpress-plugin/">Download the FontReady plugin ↓</a> and install it in WordPress → Plugins → Add New → Upload Plugin.</li><li>Open WordPress → FontReady, generate a connection key and paste the connection details below.</li></ol>
++            <label for="wordpress-connection">WordPress connection details</label>
++            <textarea id="wordpress-connection" rows="3" autocomplete="off" spellcheck="false" placeholder='Paste the connection details from your plugin'></textarea>
++            <p id="wordpress-review" class="muted"></p>
++            <label class="wordpress-license"><input id="wordpress-license" type="checkbox"> I have permission to use these fonts on this website.</label>
++            <div class="result-actions"><button id="wordpress-publish" class="secondary-button" type="button">Publish fonts ↗</button><button id="wordpress-disconnect" class="text-button" type="button">Clear connection</button></div>
++            <p id="wordpress-status" role="status" aria-live="polite"></p>
++            <p class="muted">Fonts are stored on WordPress. Select them in Elementor’s font selector under FontReady, or apply the family with CSS. Keys expire after one hour.</p>
++          </section>
+           <div class="font-info-heading"><h3 data-i18n="About your fonts">About your fonts</h3><div class="font-info-actions"><button id="toggle-font-details" class="text-button" type="button" aria-expanded="false" aria-controls="font-info" data-i18n="Show details">Show details</button><a id="info-download" class="text-button" href="#" data-i18n="Information JSON ↓">Information JSON ↓</a></div></div><p class="muted" id="research-status"></p><div id="font-info"></div><div class="code-heading"><b data-i18n="Your @font-face CSS">Your @font-face CSS</b><button class="text-button" id="copy-css" data-i18n="Copy CSS">Copy CSS</button></div><pre id="css-code"></pre>
+         </section>
+       </div>
+@@ -99,4 +112,3 @@ everything feel different.</textarea>
+ </body>
+ </html>
+ {% endlocalized_page %}
+-
