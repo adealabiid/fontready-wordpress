@@ -493,7 +493,7 @@ index 578f2b7..24e88e8 100644
      } catch (error) { status(error.message || 'Check WordPress → FontReady before retrying.',true); }
      finally { publishing=false; publish.disabled=false; }
 diff --git a/templates/index.html b/templates/index.html
-index 86ad04a..9cad54c 100644
+index 86ad04a..6bff48f 100644
 --- a/templates/index.html
 +++ b/templates/index.html
 @@ -23,7 +23,7 @@
@@ -527,15 +527,24 @@ index 86ad04a..9cad54c 100644
      <div class="workspace" id="workspace" data-clarity-mask="true">
        <div class="main-column">
          <div class="upload-preview" id="upload-preview">
-@@ -72,7 +70,7 @@ everything feel different.</textarea>
+@@ -66,14 +64,14 @@ everything feel different.</textarea>
+         </section>
+         </div>
+         <section class="card settings-card">
+-          <div class="card-heading"><h2><span class="step">02</span><span data-i18n="Choose your output">Choose your output</span></h2><span class="muted" data-i18n="Five formats. One kit.">Five formats. One kit.</span></div>
++          <div class="card-heading"><h2><span class="step">02</span><span data-i18n="Choose your output">Choose your output</span></h2>{% if elementor_page %}<span class="muted">Ready for Elementor Pro.</span>{% else %}<span class="muted" data-i18n="Five formats. One kit.">Five formats. One kit.</span>{% endif %}</div>
+           <fieldset class="output-panel"><legend data-i18n="Output formats">Output formats</legend><div class="formats">
+             <label class="format"><input type="checkbox" name="format" value="woff2" checked><span><b>WOFF2</b><small data-i18n="Recommended">Recommended</small></span></label>
              <label class="format"><input type="checkbox" name="format" value="woff"><span><b>WOFF</b><small data-i18n="Web font">Web font</small></span></label>
              <label class="format"><input type="checkbox" name="format" value="ttf"><span><b>TTF</b><small data-i18n="TrueType outlines">TrueType outlines</small></span></label>
              <label class="format"><input type="checkbox" name="format" value="otf"><span><b>OTF</b><small data-i18n="CFF outlines">CFF outlines</small></span></label>
 -            <label class="format"><input type="checkbox" name="format" value="svg"><span><b>SVG</b><small data-i18n="Legacy font">Legacy font</small></span></label>
+-          </div><p class="muted" data-i18n="Static fonts support TTF and OTF outline conversion. Variable fonts keep native outlines. SVG is for legacy tools.">Static fonts support TTF and OTF outline conversion. Variable fonts keep native outlines. SVG is for legacy tools.</p></fieldset>
 +            {% if not elementor_page %}<label class="format"><input type="checkbox" name="format" value="svg"><span><b>SVG</b><small data-i18n="Legacy font">Legacy font</small></span></label>{% endif %}
-           </div><p class="muted" data-i18n="Static fonts support TTF and OTF outline conversion. Variable fonts keep native outlines. SVG is for legacy tools.">Static fonts support TTF and OTF outline conversion. Variable fonts keep native outlines. SVG is for legacy tools.</p></fieldset>
++          </div>{% if elementor_page %}<p class="muted">WOFF2 is recommended for publishing. OTF-only kits are wrapped as WOFF2 for Elementor Custom Fonts.</p>{% else %}<p class="muted" data-i18n="Static fonts support TTF and OTF outline conversion. Variable fonts keep native outlines. SVG is for legacy tools.">Static fonts support TTF and OTF outline conversion. Variable fonts keep native outlines. SVG is for legacy tools.</p>{% endif %}</fieldset>
            <div class="settings-bottom">
              <div class="display-setting"><label class="field-label" for="font-display" data-i18n="Font loading behaviour">Font loading behaviour</label><select id="font-display"><option value="swap" data-i18n="Swap — show text while loading">Swap — show text while loading</option><option value="optional" data-i18n="Optional">Optional</option><option value="fallback" data-i18n="Fallback">Fallback</option><option value="block" data-i18n="Block">Block</option><option value="auto" data-i18n="Auto">Auto</option></select><p class="muted" data-i18n="Controls how text appears while a web font loads.">Controls how text appears while a web font loads.</p></div>
+             <div class="subset-setting"><label class="field-label" for="characters"><span data-i18n="Characters to keep">Characters to keep</span> <span class="muted" data-i18n="Optional">Optional</span></label><textarea id="characters" rows="2" maxlength="10000" placeholder="Leave blank to keep every character"></textarea><p class="muted" data-i18n="Enter specific characters for a smaller font file.">Enter specific characters for a smaller font file.</p></div>
 @@ -87,13 +85,26 @@ everything feel different.</textarea>
            <div id="result-files"></div>
            <div class="result-actions"><a id="download" class="primary-button" href="#" data-i18n="Download kit ↓">Download kit ↓</a><button id="copy-link" class="secondary-button" data-i18n="Copy download link">Copy download link</button></div>
