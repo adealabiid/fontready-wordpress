@@ -1,6 +1,6 @@
 # FontReady for Elementor Pro
 
-Version 0.4.4 publishes families into Elementor Pro’s native Custom Fonts manager, with font variants registered as WordPress media attachments. The FontReady dashboard shows connection status and installed font counts.
+Version 0.4.5 publishes families into Elementor Pro’s native Custom Fonts manager, with font variants registered as WordPress media attachments. The FontReady dashboard shows connection status, installed font counts, family names and weight/style boxes with available formats.
 
 ## User flow
 

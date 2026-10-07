@@ -200,6 +200,8 @@ function wp_safe_redirect($url){throw new RedirectResult($url);}
 function esc_html__($value,$domain){return $value;}
 function esc_html($value){return htmlspecialchars((string)$value,ENT_QUOTES);}
 function esc_attr($value){return esc_html($value);}
+function esc_url($value){return htmlspecialchars((string)$value,ENT_QUOTES);}
+function __($value,$domain){return $value;}
 function wp_nonce_field($action){echo '<input name="_wpnonce" value="fixture">';}
 function disabled($condition){if($condition)echo 'disabled';}
 $_POST=array('fontready_action'=>'connect','fontready_state'=>str_repeat('b',64),'fontready_confirm'=>'1');

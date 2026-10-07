@@ -3,7 +3,7 @@
  * Plugin Name: FontReady
  * Plugin URI: https://fontready.com
  * Description: Publish converted fonts into Elementor Pro Custom Fonts. No FontReady account or manual connection keys required.
- * Version: 0.4.4
+ * Version: 0.4.5
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Author: Ademola Alabi
@@ -56,7 +56,7 @@ final class FontReady_Plugin {
             }
             $css .= '@font-face{font-family:' . wp_json_encode( $face['family'], JSON_UNESCAPED_UNICODE ) . ';src:' . implode( ',', $sources ) . ';font-weight:' . $face['weight'] . ';font-style:' . $face['style'] . ';font-display:swap;}';
         }
-        wp_register_style( 'fontready', false, array(), '0.4.4' );
+        wp_register_style( 'fontready', false, array(), '0.4.5' );
         wp_enqueue_style( 'fontready' );
         wp_add_inline_style( 'fontready', $css );
     }
@@ -154,7 +154,7 @@ final class FontReady_Plugin {
         return new WP_REST_Response( array( 'site' => home_url( '/' ), 'elementor_pro' => self::pro(), 'families' => count( array_unique( array_column( $faces, 'family' ) ) ), 'variants' => self::variant_count( $faces ), 'native_custom_fonts' => $ready, 'multi_format_import' => true, 'chunked_import' => true ), 200 );
     }
     public static function admin_styles( $hook ) {
-        if ( $hook === 'toplevel_page_fontready' ) { wp_enqueue_style( 'fontready-admin', plugins_url( 'assets/admin.css', __FILE__ ), array(), '0.4.4' ); }
+        if ( $hook === 'toplevel_page_fontready' ) { wp_enqueue_style( 'fontready-admin', plugins_url( 'assets/admin.css', __FILE__ ), array(), '0.4.5' ); }
     }
     public static function connect() {
         if ( ! isset( $_POST['fontready_action'] ) || ! current_user_can( 'manage_options' ) ) { return; }
@@ -185,6 +185,21 @@ final class FontReady_Plugin {
     public static function page() {
         if ( ! current_user_can( 'manage_options' ) ) { return; }
         $faces = self::active_faces();
+        $installed = array();
+        foreach ( $faces as $face ) {
+            $variant = $face['weight'] . '|' . $face['style'];
+            $installed[ $face['family'] ][ $variant ]['weight'] = $face['weight'];
+            $installed[ $face['family'] ][ $variant ]['style'] = $face['style'];
+            $installed[ $face['family'] ][ $variant ]['formats'][ $face['format'] ] = strtoupper( $face['format'] );
+        }
+        uksort( $installed, 'strnatcasecmp' );
+        foreach ( $installed as &$variants ) {
+            uasort( $variants, function( $a, $b ) {
+                $weight_order = (int) $a['weight'] <=> (int) $b['weight'];
+                return $weight_order ?: strcmp( $a['style'], $b['style'] );
+            } );
+        }
+        unset( $variants );
         $connection = get_option( self::CONNECTION, array() );
         $connected = ! empty( $connection['expires'] ) && $connection['expires'] > time();
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Display-only pairing state; connecting is a separate nonce-verified POST above.
@@ -207,8 +222,31 @@ final class FontReady_Plugin {
                 <?php } else { ?><a class="fr-button" href="https://fontready.com/font-to-elementor-pro/"><?php echo $connected ? esc_html__( 'Convert & publish fonts ↗', 'fontready' ) : esc_html__( 'Connect on FontReady ↗', 'fontready' ); ?></a><?php } ?>
                 <?php if ( $connected ) { ?><form method="post" class="fr-disconnect"><?php wp_nonce_field( 'fontready_manage' ); ?><button name="fontready_action" value="disconnect"><?php echo esc_html__( 'Disconnect website', 'fontready' ); ?></button></form><?php } ?>
                 <p class="fr-footnote"><?php echo esc_html__( 'Only install fonts you have permission to use. Fonts stay on your website after the FontReady download expires.', 'fontready' ); ?></p>
-            </section><section class="fr-card fr-stat"><span class="fr-stat-icon" aria-hidden="true"><?php echo esc_html__( 'Aa', 'fontready' ); ?></span><p class="fr-number"><?php echo esc_html( count( array_unique( array_column( $faces, 'family' ) ) ) ); ?></p><h3><?php echo esc_html__( 'Fonts installed', 'fontready' ); ?></h3><p><?php echo esc_html__( 'with FontReady ·', 'fontready' ); ?><?php echo esc_html( self::variant_count( $faces ) ); ?><?php echo esc_html__( 'variants', 'fontready' ); ?></p><div class="fr-stat-tip"><?php echo esc_html__( 'Your fonts appear in Elementor → Custom Fonts. Refresh the editor after publishing. Manage fonts in Elementor.', 'fontready' ); ?></div></section></div>
-            <footer class="fr-footer"><?php echo esc_html__( 'FontReady 0.4.4 ·', 'fontready' ); ?><a href="https://fontready.com/privacy/"><?php echo esc_html__( 'Privacy & service details', 'fontready' ); ?></a><span><?php echo esc_html__( 'Made for better typography.', 'fontready' ); ?></span></footer>
+            </section><section class="fr-card fr-stat"><span class="fr-stat-icon" aria-hidden="true"><?php echo esc_html__( 'Aa', 'fontready' ); ?></span><p class="fr-number"><?php echo esc_html( count( array_unique( array_column( $faces, 'family' ) ) ) ); ?></p><h3><?php echo esc_html__( 'Fonts installed', 'fontready' ); ?></h3><p><?php echo esc_html__( 'with FontReady', 'fontready' ); ?> · <?php echo esc_html( self::variant_count( $faces ) ); ?> <?php echo esc_html__( 'variants', 'fontready' ); ?></p><div class="fr-stat-tip"><?php echo esc_html__( 'Your fonts appear in Elementor → Custom Fonts. Refresh the editor after publishing. Manage fonts in Elementor.', 'fontready' ); ?></div></section></div>
+            <section class="fr-card fr-font-library" aria-labelledby="fr-installed-heading">
+                <div class="fr-card-heading"><h3 id="fr-installed-heading"><?php echo esc_html__( 'Your installed fonts', 'fontready' ); ?></h3><a class="fr-manage" href="<?php echo esc_url( admin_url( 'edit.php?post_type=elementor_font' ) ); ?>"><?php echo esc_html__( 'Manage in Elementor ↗', 'fontready' ); ?></a></div>
+                <p class="fr-library-note"><?php echo esc_html__( 'Font families and styles installed with FontReady. Each box is one variant, with its available formats.', 'fontready' ); ?></p>
+                <?php if ( empty( $installed ) ) { ?><p class="fr-empty-fonts"><?php echo esc_html__( 'Your first published font will appear here.', 'fontready' ); ?></p><?php } ?>
+                <?php foreach ( $installed as $family => $variants ) { ?>
+                    <article class="fr-font-family"><h4><?php echo esc_html( $family ); ?></h4><ul class="fr-variant-list">
+                        <?php foreach ( $variants as $variant ) { ?><li class="fr-variant-box">
+                            <span class="fr-variant-weight"><?php
+                                /* translators: %s: numeric font weight or variable weight range. */
+                                echo esc_html( sprintf( __( 'Weight %s', 'fontready' ), str_replace( ' ', '–', $variant['weight'] ) ) );
+                            ?></span>
+                            <span class="fr-variant-style"><?php echo $variant['style'] === 'italic' ? esc_html__( 'Italic', 'fontready' ) : esc_html__( 'Normal', 'fontready' ); ?></span>
+                            <span class="fr-variant-formats"><?php
+                                $formats = array();
+                                foreach ( array( 'woff2', 'woff', 'ttf', 'svg', 'eot' ) as $format ) {
+                                    if ( isset( $variant['formats'][ $format ] ) ) { $formats[] = $variant['formats'][ $format ]; }
+                                }
+                                echo esc_html( implode( ' · ', $formats ) );
+                            ?></span>
+                        </li><?php } ?>
+                    </ul></article>
+                <?php } ?>
+            </section>
+            <footer class="fr-footer"><?php echo esc_html__( 'FontReady 0.4.5 ·', 'fontready' ); ?><a href="https://fontready.com/privacy/"><?php echo esc_html__( 'Privacy & service details', 'fontready' ); ?></a><span class="fr-creator"><?php echo esc_html__( 'Created with love from Lagos, Nigeria by', 'fontready' ); ?> <a href="https://ademolaalabi.com/" target="_blank" rel="noopener noreferrer"><?php echo esc_html__( 'Ademola Alabi', 'fontready' ); ?></a></span></footer>
         </div>
         <?php
     }

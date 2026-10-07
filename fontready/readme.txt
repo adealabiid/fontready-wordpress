@@ -3,7 +3,7 @@ Tags: fonts, typography, elementor, custom fonts
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 0.4.4
+Stable tag: 0.4.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -63,6 +63,10 @@ HTTPS, REST API access and forwarding of the Authorization header are required. 
 If an installation response is lost, check the installed count before retrying. Clear page caches and refresh Elementor after installing. If a terminated PHP process leaves a write lock, deactivate and reactivate the plugin when no imports are running.
 
 == Changelog ==
+
+= 0.4.5 =
+* Show installed font family names with weight, style and available format boxes.
+* Add the Lagos creator credit to the plugin dashboard.
 
 = 0.4.4 =
 * Prepare directory metadata and document private staging filesystem exceptions.
