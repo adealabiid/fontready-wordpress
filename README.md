@@ -1,24 +1,59 @@
 # FontReady for Elementor Pro
 
-Version 0.4.5 publishes families into Elementor Pro’s native Custom Fonts manager, with font variants registered as WordPress media attachments. The FontReady dashboard shows connection status, installed font counts, family names and weight/style boxes with available formats.
+**Convert a font. Approve your WordPress site. Publish it into Elementor Pro Custom Fonts.**
 
-## User flow
+Built by [Ademola Alabi](https://ademolaalabi.com/) · PHP / WordPress REST API / Elementor Pro · GPL-2.0-or-later
 
-1. Convert on `/font-to-elementor-pro/`, or open a ready kit there from the main converter.
-2. Choose Publish to Elementor Pro website and enter the URL.
-3. Install and activate Elementor Pro and FontReady; confirm both.
-4. Approve publishing as a WordPress administrator. The selected batch returns with the browser and publishing resumes.
-5. Open Elementor → Custom Fonts. Refresh the editor to select the family.
+[Live product](https://fontready.com/) · [Elementor publishing flow](https://fontready.com/font-to-elementor-pro/) · [Architecture](docs/ARCHITECTURE.md) · [Security and privacy](docs/SECURITY.md) · [Reviewer guide](docs/REVIEWER_GUIDE.md)
 
-No FontReady account or manual connection keys. The nonce-protected WordPress approval remains necessary to authorize installation. Opaque credentials stay in tab session storage and are never sent to FontReady’s server. Selected kits are session-owned and expire after 24 minutes. The new plugin is required for native publishing; the website rejects the older group-only connector.
+## The problem
 
-## Native adapter
+Installing a custom font in Elementor involves more than converting a file. A designer still needs to move the output to WordPress, create a Custom Fonts family, and associate files with the correct weights and styles.
 
-`includes/elementor.php` obtains the installed Elementor assets manager and its custom-font type. It calls that object’s `save_meta` method to generate native metadata and CSS rather than copying Elementor implementation code. WordPress APIs create font posts, media records and taxonomy terms. It refuses to overwrite fonts created outside FontReady, registers retries without duplicate families, restores prior metadata after a failed registry write, and invalidates font-manager option caches. Existing draft or trashed families require a decision in Elementor first.
+FontReady connects conversion to installation. This repository contains the WordPress plugin that accepts an approved publishing request, validates the font assets, and registers them in Elementor Pro's native Custom Fonts manager. The companion website performs conversion.
 
-The adapter relies on Elementor’s internal PHP interface. Compatibility with a live Elementor Pro installation is **unverified**. The standard tests use an isolated manager double. An optional source contract loads the supplied Elementor Pro 4.3.1 assets module, font manager, sanitizer and Custom Fonts implementation; it verifies native metadata and CSS with WordPress APIs stubbed. This does not establish live rendering or native variable-font editing support. Run the optional contract with `ELEMENTOR_PRO_SOURCE=/absolute/path/to/elementor-pro python scripts/check.py`. Vendor source is not included in this repository or release ZIP. Live testing is a release gate. The website accepts TTF, OTF, WOFF and WOFF2 and prepares all five Elementor formats. Resource limits apply per request; there is no total stored-font quota.
+## Product decisions
 
-## Validation
+- **No FontReady account to create:** approval happens through the site's WordPress administrator account.
+- **Native Elementor records:** font families, variant rows and media attachments remain manageable inside WordPress.
+- **One family, multiple weights:** separate uploads using the same family name add matching weight/style rows. Retrying a variant does not create another family.
+- **Five formats per variant:** WOFF2, WOFF, TTF, SVG and EOT share the same weight/style row.
+- **Local ownership:** installed files are hosted on the WordPress site. Expiring a conversion download does not remove installed fonts.
+- **Recoverable publishing:** small authenticated upload pieces, checksum verification and idempotent receipts support retries.
+
+## Dashboard preview
+
+![FontReady dashboard rendered with isolated test data](docs/dashboard-preview.png)
+
+*Rendered from the actual plugin dashboard template with isolated test data and a minimal page shell. This is a UI preview, not a screenshot of a live WordPress/Elementor installation or evidence of customer adoption.*
+
+## Install and try it
+
+Requirements: WordPress 6.2 or later, PHP 7.4 or later, active Elementor Pro, HTTPS, writable WordPress uploads, and a writable private system temporary directory outside the WordPress installation.
+
+1. Download [fontready-wordpress.zip](fontready-wordpress.zip) from this repository, or build it with `python scripts/build.py`.
+2. In WordPress, open **Plugins → Add New → Upload Plugin**, select the ZIP and activate FontReady.
+3. Open [FontReady's Elementor page](https://fontready.com/font-to-elementor-pro/) and upload a font you have permission to embed.
+4. Choose **Publish to Elementor Pro website**, enter the site URL, and approve the connection as a WordPress administrator.
+5. Open **Elementor → Custom Fonts** to inspect the family and its variants. Refresh the editor before selecting the font.
+
+You can revoke publishing access from the FontReady dashboard in WordPress. The automatically generated connection expires after seven days; there is no key to copy manually.
+
+## Engineering overview
+
+| Responsibility | Implementation |
+| --- | --- |
+| Administrator approval, REST authorization, import orchestration and dashboard | [fontready/fontready.php](fontready/fontready.php) |
+| Metadata, size and file-structure validation | [validation.php](fontready/includes/validation.php) |
+| Private staging, ordered upload pieces, SHA-256 and retry receipts | [transfer.php](fontready/includes/transfer.php) |
+| Native families, attachments, variant merging and rollback | [elementor.php](fontready/includes/elementor.php) |
+| Real generated font fixtures and isolated PHP contracts | [scripts/check.py](scripts/check.py), [tests/plugin.php](tests/plugin.php) |
+
+See the [reviewer guide](docs/REVIEWER_GUIDE.md) for a focused code walkthrough and the [architecture guide](docs/ARCHITECTURE.md) for the transfer boundary and persistence model.
+
+## Run the checks
+
+Install PHP CLI and Python 3.12, then:
 
 ```sh
 pip install -r requirements-dev.txt
@@ -26,16 +61,36 @@ python scripts/check.py
 python scripts/build.py
 ```
 
-See [the submission plan](docs/WORDPRESS_ORG_SUBMISSION.md). Do not claim a Tested up to version until it has been tested. The website repository is authoritative for the companion flow; `integration/fontready.patch` is a review reference. GPL-2.0-or-later. Author: Ademola Alabi.
+For a PHP executable outside PATH:
 
-Version 0.4.0 installs WOFF2, WOFF, TTF, SVG and EOT together in one native weight/style row. Readable filenames include family, weight, optional style and a short FontReady suffix. Earlier single-format records migrate on publishing. The companion Elementor page starts conversion on upload without format choices and automatically resumes publishing after approval.
+```sh
+PHP_BINARY=/absolute/path/to/php python scripts/check.py
+```
 
-The platform owner dashboard is https://fontready.com/owner/. It uses a separate FontReady superuser login, provisioned in the deployed website service with `python manage.py createsuperuser`; see the website README for production setup.
+The standard suite generates real TTF, OTF, WOFF and WOFF2 fixtures, plus grouped SVG/EOT assets, and runs isolated PHP contracts with WordPress and Elementor doubles. On 8 October 2026, the reviewed source passed PHP syntax checks and **98 contract checks** locally. This does not establish live compatibility.
 
-Version 0.4.1 respects variant and format deletions in Elementor, preserves administrator-added variants, and reports how many previously imported variants remain alongside the current upload. Earlier imports are kept until the administrator removes them in Elementor Custom Fonts; fonts are never fabricated from one static upload.
+An optional contract can load separately supplied Elementor Pro source:
 
-Version 0.4.2 sends the complete JSON package as authenticated upload pieces of at most 128 KiB (base64 request bodies below 256 KiB). WordPress stages one upload per connection in a private system temporary file, verifies SHA-256, then runs the existing atomic five-format importer. Pieces and commit receipts are idempotent. Pending uploads expire after ten minutes, with cleanup on the next request or WordPress cron; disconnect/deactivation removes staged data. A system temporary directory outside the WordPress installation must be writable. The connected dashboard links to conversion rather than asking to connect again.
+```sh
+ELEMENTOR_PRO_SOURCE=/absolute/path/to/elementor-pro python scripts/check.py
+```
 
-Version 0.4.3 corrects the base64 length boundary for full 128 KiB upload pieces. The transfer contract now uses the actual production chunk size and a package larger than one chunk.
+Vendor source is not included. The companion JavaScript contract in `integration/check_wordpress_ui.cjs` requires the companion website's `static/` files; it is not part of the standalone PHP test command.
 
-Version 0.4.4 prepares directory submission metadata, uses a fixed allowlisted safe redirect and checks file permission failures. Official Plugin Check is run in CI against WordPress 7.1.3. Local staging stream operations have narrowly scoped documented exceptions because WordPress filesystem transports do not support seeked chunk writes.
+## Current scope and limitations
+
+- Version **0.4.5**. WordPress.org approval/distribution is not established by this repository.
+- The adapter calls Elementor's internal PHP Custom Fonts interface. Live Elementor compatibility and rendering remain **unverified in this review**; tests use doubles unless vendor source is explicitly supplied.
+- Matching depends on the supplied family name, weight and style. Different family spellings are not automatically reconciled.
+- OTF can be a conversion input, but direct OTF persistence through this native adapter is unsupported.
+- Validation checks bounded metadata and selected file structures; it is not a full font-parser or malware audit.
+- Payload limits apply per import, not as a lifetime storage quota.
+- The website and WordPress must both be reachable; hosting cold starts and site security policies can affect publishing.
+- Abrupt process termination can leave option-based locks requiring recovery; rollback handles caught failures rather than providing a database transaction.
+
+[Security details and review scope](docs/SECURITY.md) · [Implementation/version notes](docs/IMPLEMENTATION_NOTES.md) · [WordPress.org submission plan](docs/WORDPRESS_ORG_SUBMISSION.md)
+
+FontReady is independent and is not affiliated with or endorsed by Elementor.
+
+Created with love from Lagos, Nigeria by **Ademola Alabi**.
+
